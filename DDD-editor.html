@@ -1,0 +1,3129 @@
+<!DOCTYPE html>
+<html manifest="AppTM.appcache">
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+		<title>ISO 11783 machine editor</title>
+		
+		<!-- jQuery Metro style -->
+		<link rel="stylesheet" type="text/css" href="css/jquery-ui.css"/> 
+		<!-- <link rel="stylesheet" type="text/css" href="css/jquery.svg.css"/>   -->
+		
+		<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js" type="text/javascript"></script> 
+		<script src="http://ajax.googleapis.com/ajax/libs/jqueryui/1.9.1/jquery-ui.min.js" type="text/javascript"></script> 
+				
+		<script type="text/javascript" src="js/jquery.svg.js"></script>		
+		<script type="text/javascript" src="js/jquery.svgdom.js"></script>
+		<script type="text/javascript" src="js/tableEdit-0.1.js"></script>
+		
+		<script type="text/javascript" src="js/ISO11783-11.js"></script>
+		
+		
+		<!-- Own Scripts -->
+		<script type="text/javascript">
+		
+			var xmlDoc = null;
+			var svghandle = null; 
+			var graph_width = 600;
+			var graph_height = 600;
+			var graph_sp;
+			var graph_basegroup;
+			var offset = null;
+			var drag_element = null;
+			var resize_element = null;
+			var scale = 1;
+			
+			var DETColor = ['','black','blue','green','orange','brown','grey','yellow'];
+			var DET_TYPE_NAME = ['','DRP / DET0','ERP / FUN','ERP / BIN','ERP / SCT','ERP / UNIT','CRP / CNN','NRP / NAV'];
+			var DET_TYPE_DESCRIPTION = ['', 
+				'DeviceReferencePoint / Device\nThe device descriptor object pool shall have one device\nelement of type device with device element number=0,\nwhich represents the complete device.\n\nFor a tractor, the DRP is the centre of the rear axle.\nFor a wheeled implement, the DRP is the centre of\nthe front axle. In other cases, the DRP can be chosen\nfreely, e.g. DRP = CRP or DRP = ERP. If there are angles\non the device geometry, the device control function is\nresponsible for recalculating the new DRP/CRP and\nsending this as dynamic data to the TC.',
+				'DeviceElementReferencePoint: Function\nThe ERP is the centre of one (or of a group of)\ndevice element(s).\n\nThis device element type can be used as a generic device\nelement to define individually accessible components of\na device like valves or sensors. The detailed function of\nthis device element type is defined by its list of device\nprocess data and device properties attributes.',
+				'DeviceElementReferencePoint: Bin\nThe ERP is the centre of one (or of a group of)\ndevice element(s).\n\nThis is, for instance, the tank of a sprayer or the bin\nof a seeder.',
+				'DeviceElementReferencePoint: Section\nThe ERP is the centre of one (or of a group of)\ndevice element(s).\n\nThis is, for instance, the section of a spray boom,\nseed toolbar, or planter toolbar. A section may provide\ndevice geometry definitions and workind width next to\nsupported process data elements as device process\nvariable values or device property values.',
+				'DeviceElementReferencePoint: Unit\nThe ERP is the centre of one (or of a group of)\ndevice element(s).\n\nThis device element type is, for example, used for spray\nboom nozzles, seeder openers, or planter row units.\nIt is intended as a layer below the deivce element type\nsection in the hierarchical device element structure.\nA device element of type unit is typically the most\ndetailed level that can be addressed in a device.\nAn example is a number of row units that belong\nto the same section.',
+				'ConnectorReferencePoint\nThe CRP specifies the position of one or more\nmounting facilities, e.g. rear and front three-point hitch\nor drawbar. For the three-point hitch, the CRP is\nthe centre of the lower link points. If there are dynamic\nchanges (e.g. by a steering axle of the device),\nthe device has to calculate the new CRP and send it\nto the TC."',
+				'NavigationReferencePoint\nThe NRP refer to the location of Device Elements that\nare of DeviceElementType "Navigation". Such devices are\nfor example GPS receivers.'];
+			
+			var DDE = getDDI();
+			
+			<!-- current selections -->
+			var currentDVC;
+			var currentDET;
+			var currentDPT;
+			var currentDPD;
+			var currentDVP;
+			
+			<!-- previous selections -->
+			var oldDVC;
+			var oldDET;
+			var oldDPT;
+			var oldDPD;
+			var oldDVP;
+			
+		
+			<!-- initialize Editor -->
+			$(function() {
+				initMessages();
+				initPropertyEditor();
+				initTree();
+				initGeometry();
+				initDevice();
+			});
+			
+			
+			
+			<!-- Update changes in current selections -->
+			function updateAll() {
+				updateGeometry()
+				UpdateTree();
+				updateTable();
+			}
+					
+			<!-- Select element -->
+			function selectElement(elementid) {
+				
+				// previous selections
+				oldDVC = currentDVC;
+				oldDET = currentDET;
+				oldDPT = currentDPT;
+				oldDPD = currentDPD;
+				oldDVP = currentDVP;
+				
+				
+				if(elementid.startsWith("DVC")) {
+					currentDVC = elementid;
+					currentDET = null;
+					currentDPT = null;
+					currentDVP = null;
+				}
+				else if(elementid.startsWith("DET")) {
+					currentDET = elementid;
+					currentDPT = null;
+					currentDPD = null;
+					currentDVP = null;
+				} else if(elementid.startsWith("DPT")) {
+					currentDPT = elementid;
+					currentDPD = null;
+					currentDVP = null;
+					
+					DPT = getByObjectID(currentDPT.replace("DPT","")) 
+					if(DPT.getAttribute("E") != undefined) {
+						currentDVP = "DVP" + DPT.getAttribute("E");
+					}
+				
+				} else if(elementid.startsWith("DPD")) {
+					currentDPD = elementid;
+					currentDPT = null;
+					currentDVP = null;
+					
+					DPD = getByObjectID(currentDPD.replace("DPD","")) 
+					if(DPD.getAttribute("F") != undefined) {
+						currentDVP = "DVP" + DPD.getAttribute("F");
+					}
+				} else if(elementid.startsWith("DVP")) {
+					currentDVP = elementid;
+				}
+				
+				updateAll();
+			}
+			
+			
+			<!-- ****** -->
+			<!-- DEVICE -->
+			<!-- ****** -->
+		
+		
+			function getUrlVars() {
+				var vars = {};
+				var parts = window.location.href.replace(/[?&]+([^=&]+)=([^&]*)/gi,    
+					function(m,key,value) {
+						vars[key] = value;
+					});
+				return vars;
+			}
+  
+			
+			<!-- Initialize empty device description with DVC1 element -->
+			function initDevice() {
+				parser = new DOMParser();
+				xmlDoc = parser.parseFromString('<?xml version="1.0" encoding="UTF-8"?><DVC A="DVC1"/>','text/xml');
+				
+				// NOTE: Only DVC1 can be edited!
+				currentDVC = "DVC1";
+				
+				createDVC_Tree("DVC1");
+				
+				// initial attributes are empty
+				setDVC({});
+			};
+			
+			function getByElementID(value) {
+				var All = xmlDoc.getElementsByTagName('DET');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("A") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				All = xmlDoc.getElementsByTagName('DVC');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("A") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				return;
+			}
+			
+			function getByElementNumber(value) {
+				var All = xmlDoc.getElementsByTagName('DET');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("E") == value) { 
+						return All[i]; 
+					}
+				}
+				return;
+			}
+			
+			function getByObjectID(value) { 
+			
+				// 0 refers to device. Note: unpossible to say which device if many!
+				if( value == 0 )
+					return xmlDoc.getElementsByTagName('DVC')[0];
+				
+			
+				var All = xmlDoc.getElementsByTagName('DET');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("B") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				var All = xmlDoc.getElementsByTagName('DPT');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("A") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				var All = xmlDoc.getElementsByTagName('DPD');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("A") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				var All = xmlDoc.getElementsByTagName('DVP');
+				for (var i = 0; i < All.length; i++) {
+					if (All[i].getAttribute("A") == value) { 
+						return All[i]; 
+					}
+				}
+				
+				return;
+			}
+			
+			function getByDDI(parentID, DDI) {
+				var parent = getByElementID(parentID);
+				if(parent == undefined) {
+					return;
+				}
+				
+				var All = parent.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length; i++) {
+					var DPT_DPD = getByObjectID(All[i].getAttribute("A"));
+					var DPT_DPD_DDI = DPT_DPD.getAttribute("B");
+					if (DPT_DPD_DDI != undefined && DPT_DPD_DDI.toUpperCase().replace(/\b(0(?!\b))+/g, "") == DDI) { 
+						return DPT_DPD; 
+					}
+				}
+				
+				return;
+			}
+				
+			function getByDesignator(parentID, Designator) {
+				var parent = getByElementID(parentID);
+				if(parent == undefined) {
+					return;
+				}
+				
+				var All = parent.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length; i++) {
+					var DPT_DPD = getByObjectID(All[i].getAttribute("A"));
+					
+					
+					if(DPT_DPD.nodeName == "DPT") {
+						if (DPT_DPD.getAttribute("D") == Designator) { 
+							return DPT_DPD; 
+						}
+					} else if(DPT_DPD.nodeName == "DPD") {
+						if (DPT_DPD.getAttribute("E") == Designator) { 
+							return DPT_DPD; 
+						}
+					}
+				}
+				
+				return;
+			}
+			
+			function getByElementName(Element) {
+				var retvalue = [];
+				var All = xmlDoc.getElementsByTagName(Element);
+			
+				if(Element == "DET") {
+					for (var i = 0; i < All.length; i++)
+						retvalue.push(All[i].getAttribute("A"));
+				} else {
+					for (var i = 0; i < All.length; i++)
+						retvalue.push(All[i].nodeName + All[i].getAttribute("A"));
+				}
+				
+				return retvalue;
+			}
+			
+			
+			function setDVC(Attributes) {
+				// Attributes: [DVC], Designator, SoftwareVersion, NAME, SerialNumber, StructureLabel, LocalizationLabel
+
+				var DVC;
+				
+				if(Attributes["DVC"] != undefined) { DVC = getByElementID(Attributes["DVC"]) }
+				else { DVC = getByElementID(currentDVC) }
+				
+				if(Attributes["Designator"] != undefined) { DVC.setAttribute("B",Attributes["Designator"]); }
+				if(Attributes["SoftwareVersion"] != undefined) { DVC.setAttribute("C",Attributes["SoftwareVersion"]); }
+				if(Attributes["NAME"] != undefined) { DVC.setAttribute("D",Attributes["NAME"]); }
+				if(Attributes["SerialNumber"] != undefined) { DVC.setAttribute("E",Attributes["SerialNumber"]); }
+				if(Attributes["StructureLabel"] != undefined) { DVC.setAttribute("F",Attributes["StructureLabel"]); }
+				if(Attributes["LocalizationLabel"] != undefined) { DVC.setAttribute("G",Attributes["LocalizationLabel"]); }
+				
+				// update information
+				updateAll();
+			};
+			
+			function getDVCOptions(Attr) {
+				return ({"type":"text"});
+			}
+			
+			function getDVC() {
+				var Attributes = {Designator:undefined, SoftwareVersion:undefined, NAME:undefined, SerialNumber:undefined, StructureLabel:undefined, LocalizationLabel:undefined};
+				var DVC = getByElementID(currentDVC);
+				
+// TODO:  check that attributes aren't too long etc.
+				Attributes["Designator"] = DVC.getAttribute("B");
+				Attributes["SoftwareVersion"] = DVC.getAttribute("C");
+				Attributes["NAME"] = DVC.getAttribute("D");
+				Attributes["SerialNumber"] = DVC.getAttribute("E");
+				Attributes["StructureLabel"] = DVC.getAttribute("F");
+				Attributes["LocalizationLabel"] = DVC.getAttribute("G");
+				
+				return Attributes;
+			}
+		
+			function newDET(Attributes) {
+				// Attributes: Type, Designator, Parent
+
+				// Find unused variables
+				var newID;
+				for(var i= 0; i<65534 && newID==undefined; i++) {
+					if( getByElementID("DET" + i.toString()) == undefined) {
+						newID = "DET" + i.toString();
+					}
+				}
+				
+				var newObjectID;
+				for(var i= 1; i<65534 && newObjectID==undefined; i++) {
+					if( getByObjectID(i) == undefined) {
+						newObjectID = i;
+					}
+				}
+				
+				var newElementNumber;
+				for(var i= 0; i<4095 && newElementNumber==undefined; i++) {
+					if( getByElementNumber(i) == undefined) {
+						newElementNumber = i;
+					}
+				}
+				
+				var DET = xmlDoc.createElement("DET");
+				
+				// Attribute A: Unique identifier of DeviceElement Format: (DET|DET-)([0-9])+
+				DET.setAttribute("A",newID);
+				
+				// Attribute B: Object ID unique inside a device description
+				DET.setAttribute("B",newObjectID);
+
+				// Attribute E: Device Element Number
+				DET.setAttribute('E',newElementNumber);
+				
+				if(Attributes["Parent"] == undefined) {
+					Attributes["Parent"] = currentDVC; 
+				}
+				
+				getByElementID(currentDVC).appendChild(DET);
+				
+				valid = setDET(jQuery.extend(Attributes,{DET:newID}));
+				
+				if(valid == false) 
+				{ 
+					DET.parentElement.removeChild(DET);
+					return "INVALID"; 
+				}
+				
+				// Create elements to graph and tree
+				createDET_SVG(newID)
+				createDET_Tree(newID);
+				
+				// Default DPT
+				if(Attributes["Type"] == 1) {
+					newDPT({Parent1:newID, DDI:"B4", Designator:DDE["B4"].Description});	// DRP to Ground distance (z)
+				}
+				
+				if(Attributes["Type"] != 1) {
+					newDPT({Parent1:newID, DDI:"86", Designator:DDE["86"].Description});	// Device Element Offset X
+					newDPT({Parent1:newID, DDI:"87", Designator:DDE["87"].Description});	// Device Element Offset Y
+					//newDPT({Parent1:newID, DDI:"88", Designator:DDE["88"].Description});	// Device Element Offset Z
+					
+					newDPT({Parent1:newID, DDI:"9A", Designator:DDE["9A"].Description});	// Physical Object Length
+					newDPT({Parent1:newID, DDI:"9B", Designator:DDE["9B"].Description});	// Physical Object Width
+					//newDPT({Parent1:newID, DDI:"9C", Designator:DDE["9C"].Description});	// Physical Object Height
+				}
+				
+				if(Attributes["Type"] == 6) {
+					newDPT({Parent1:newID, DDI:"9D", Designator:DDE["9D"].Description});	// Connector Type
+				}
+				
+				return newID;
+			}
+		
+			function setDET(Attributes) {
+				// Attributes: [DET], Type, Designator, Parent
+				
+				// Get old or default attributes if not set
+				if(Attributes["DET"] == undefined) { 
+					Attributes["DET"] = currentDET 
+				}
+				var DET = getByElementID(Attributes["DET"]);
+			
+				if(Attributes["Parent"] == undefined) { 
+					Attributes["Parent"] = getByObjectID(DET.getAttribute("F")).getAttribute("A"); 
+				}
+				
+				if(Attributes["Type"] == undefined || parseInt(Attributes["Type"]) > 7 || parseInt(Attributes["Type"]<1)) {
+					Attributes["Type"] = DET.getAttribute("C");
+				}
+			
+			
+				// Chech that parent is valid for this element
+				if(Attributes["Type"] != "1" && Attributes["Parent"].startsWith("DVC")) { 
+					Message("Only Device Element can be the children of Device");
+					return false; 
+				}
+				
+				if(Attributes["Type"] == "1") { 
+					if( Attributes["Parent"].startsWith("DVC") ) {
+						var DVC = getByElementID(Attributes["Parent"])
+						var All = DVC.getElementsByTagName('DET');
+						var count = 0;
+						for (var i = 0; i < All.length; i++) {
+							if (All[i].getAttribute("C") == 1) { 
+								count = count + 1;
+							}
+						}
+						if(count > 1) {
+							Message("Device can contain only one Device Element");		
+							return false;
+						}
+					} else {
+						Message("Only Device can be the parent of Device Element");		
+						return false;
+					}					
+				}
+
+				if(Attributes["Type"] == "6" && Attributes["Parent"] != "DET0") { 
+					Message("Only Device Element can be the parent of Connector Element");
+					return false; 
+				}
+				
+				// Attribute F: Object ID of parent DeviceElement or Device
+				if(Attributes["Parent"] != undefined) { 
+					if(Attributes["Parent"].startsWith("DET")) {
+					
+						var iterAttr = Attributes;
+						while(!iterAttr["Parent"].startsWith("DVC")) {
+							if(iterAttr["Parent"] == Attributes["DET"]) {
+								Message("Children cannot be a parent!");
+								return false;
+							}
+							
+							iterAttr = getDET(iterAttr["Parent"]);
+						}
+						
+						DET.setAttribute("F",getByElementID(Attributes["Parent"]).getAttribute("B")); 
+					} else if(Attributes["Parent"].startsWith("DVC")) {  
+						DET.setAttribute("F","0"); 
+					}  else {
+						Message("Invalid parent!");
+						return false;
+					}
+					
+				}
+				
+				// Attribute C: Device Element Type
+				if(Attributes["Type"] != undefined) { DET.setAttribute("C",Attributes["Type"]); } 
+				
+				// Attribute D: Designator of element
+				if(Attributes["Designator"] != undefined) { DET.setAttribute("D",Attributes["Designator"]); } 
+	
+				// Properties
+				var All = DET.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length; i++) {
+					var DPT_DPD = getByObjectID(All[i].getAttribute("A"));
+					
+					if(DPT_DPD.nodeName == "DPT") {
+						if(Attributes[DPT_DPD.getAttribute("D")] != undefined) {						
+							DPT_DPD.setAttribute("C", Attributes[DPT_DPD.getAttribute("D")]);
+						}
+					} 
+				}	
+	
+			
+				// update information
+				//updateAll();
+			
+				return true;
+			}
+			
+			function getDETOptions(Attr) {
+				if(Attr == "Type") {
+					return ({"type":"radio", "Options": {	
+							"1":"device",
+							"2":"function",
+							"3":"bin",
+							"4":"section",
+							"5":"unit",
+							"6":"connector",
+							"6":"navigation"
+							}
+						});	
+				} else if (Attr == "Parent") {
+					var options = {};
+					var All = xmlDoc.getElementsByTagName("DET");
+			
+					for (var i = 0; i < All.length; i++)
+						options[All[i].getAttribute("A")] = All[i].getAttribute("A") + ": " + All[i].getAttribute("D");
+				
+					return ({"type":"select", "Options":options});
+				}
+				else {
+					return ({"type":"text" });
+				}			
+			}
+			
+			function getDET(DET_ID) {
+				var Attributes = {Designator:undefined, Type:undefined, Parent:undefined};
+				
+				if(DET_ID == undefined) {
+					DET_ID = currentDET;
+				}
+				
+				var DET = getByElementID(DET_ID);
+				
+				Attributes["Designator"] = DET.getAttribute("D");
+				Attributes["Type"] = DET.getAttribute("C");
+				Attributes["Parent"] = getByObjectID(DET.getAttribute("F")).getAttribute("A");
+				
+				var All = DET.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length; i++) {
+					var DPT_DPD = getByObjectID(All[i].getAttribute("A"));
+					
+					if(DPT_DPD.nodeName == "DPT") {
+						Attributes[DPT_DPD.getAttribute("D")] = DPT_DPD.getAttribute("C");
+					} 
+				}				
+				
+				return Attributes;
+			}
+			
+			function delDET(DET_ID) {
+				
+				if(DET_ID == undefined) {
+					DET_ID = currentDET;
+				}
+				
+				var DET = getByElementID(DET_ID);
+				var ObjectID = DET.getAttribute("B");
+				
+				// Remove childs
+				var All = xmlDoc.getElementsByTagName('DET');
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("F") == ObjectID) {
+						delDET(All[i].getAttribute("A"));
+					} else {
+						i++;
+					}
+				}				
+				
+				// remove properties
+				var All = DET.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length;) {
+					var DPT_DPD = getByObjectID(All[i].getAttribute("A"));
+
+					if(DPT_DPD.nodeName == "DPT") {
+						delDPTParent(All[i].getAttribute("A"), DET_ID);
+					} else {
+						i++;
+					}
+				}
+
+				// remove DET from graph and tree
+				delDET_SVG(DET_ID)
+				delDET_Tree(DET_ID);
+
+				// remove DET itself
+				DET.parentElement.removeChild(DET);
+				
+				
+				if(DET_ID == currentDET) {
+					currentDET = undefined;
+				}
+				
+				
+				//updateAll();
+			}
+			
+			
+			function newDPD(Attributes) {
+				// Attributes: [Parent], DDI, Property, Trigger, Designator, [Presentation]
+
+				// Find unused variables
+				var newObjectID;
+				for(var i= 1; i<65534 && newObjectID==undefined; i++) {
+					if( getByObjectID(i) == undefined) {
+						newObjectID = i;
+					}
+				}
+				
+				var DPD = xmlDoc.createElement("DPD");
+				
+				// Attribute A: Object ID unique inside a device description
+				DPD.setAttribute("A",newObjectID);
+
+				getByElementID(currentDVC).appendChild(DPD);
+				
+				if(Attributes["Parent1"] == undefined) {
+					Attributes["Parent1"] = currentDET;
+				}				
+				
+				valid = setDPD(jQuery.extend(Attributes,{ObjectID:newObjectID}));
+				
+				if(valid == false) 
+				{ 
+					DPD.parentElement.removeChild(DPD);
+					return "INVALID"; 
+				}
+				
+				// Create elements to for all parents
+				var count = 1;
+				while(Attributes["Parent"+count] != undefined) {
+					createDPD_Tree(newObjectID, Attributes["Parent"+count]);
+					count = count + 1;
+				}	
+				
+				return newObjectID;
+			}
+			
+			
+			function setDPD(Attributes) {
+				// Attributes: ObjectID, DDI, Property, Trigger, Designator, [Parent], [Presentation]
+				var DPD;
+				
+				if(Attributes["ObjectID"] == undefined) {
+					if( currentDPD != undefined) {
+						Attributes["ObjectID"] = currentDPD.replace("DPD","");
+					}
+					else {
+						return false;
+					}
+				}
+					
+				DPD = getByObjectID(Attributes["ObjectID"]) 
+							
+			
+				// Attribute B: DDI
+				if(Attributes["DDI"] != undefined) { DPD.setAttribute("B", Attributes["DDI"]); } 
+				
+				// Attribute C: Property
+				if(Attributes["Property"] != undefined) { DPD.setAttribute("C", Attributes["Property"]); } 
+				
+				// Attribute D: Trigger
+				if(Attributes["Trigger"] != undefined) { DPD.setAttribute("D", Attributes["Trigger"]); } 
+				
+				// Attribute E: Designator
+				if(Attributes["Designator"] != undefined) { DPD.setAttribute("E", Attributes["Designator"]); } 				
+				
+				
+				// count how many parents there are already
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var oldcount = 0;
+				var oldParents = [];
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("A") == Attributes["ObjectID"]) {
+						oldParents.push(All[i].parentNode.getAttribute("A"));
+						oldcount = oldcount + 1;
+					} 
+				}
+				
+				// check if parents have changed
+				var count = 1;
+				while(Attributes["Parent"+count] != undefined || count < oldcount) {
+					var DET = getByElementID(Attributes["Parent"+count]);
+				
+					if(DET != undefined && oldParents.indexOf(Attributes["Parent"+count]) == -1) {
+						var DOR = xmlDoc.createElement("DOR");
+						DOR.setAttribute('A',Attributes["ObjectID"]);
+						DET.appendChild(DOR);
+					}
+					
+					count = count + 1;
+				}				
+				
+				if(DPD.getAttribute("F") != undefined) {
+					// DVP atributes are included, but replace ObjectID and Parents first
+					var DVPAttributes = {};
+					
+					for(Attr in Attributes) {
+						if(!Attr.startsWith("Parent")) {
+							DVPAttributes[Attr] = Attributes[Attr];
+						}
+					}
+					
+					DVPAttributes["ObjectID"] = DPD.getAttribute("F");
+					DVPAttributes["Parent1"] = "DPD" + DPD.getAttribute("A");
+					
+					setDVP(DVPAttributes);
+				}
+
+				// update information
+				//updateAll();
+			
+				return true;
+			}
+			
+			function getDPDOptions(Attr) {
+				if(Attr == "Property") {
+					return ({"type":"checkbox", "Options": {	
+							"1":"belongs to default set",
+							"2":"settable",
+							"4":"control source",
+							},
+							"handleValue": function(oldvalues, value) { 
+								return parseInt(oldvalues)|parseInt(value); 
+							} , 
+							"checkValue": function(selected,test) { 
+								return parseInt(selected)&parseInt(test); 
+							}
+						});	
+				} else if(Attr == "Trigger") {
+					return ({"type":"checkbox", "Options": {	
+							"1":"time interval",
+							"2":"distance interval",
+							"4":"threshold limits",
+							"8":"on change",
+							"16":"total",
+							},
+							"handleValue": function(oldvalues, value) { 
+								return parseInt(oldvalues)|parseInt(value); 
+							} , 
+							"checkValue": function(selected,test) { 
+								return parseInt(selected)&parseInt(test); 
+							}
+						});	
+				} else if (Attr.startsWith("Parent")) {
+					var options = {};
+					var All = xmlDoc.getElementsByTagName("DET");
+			
+					for (var i = 0; i < All.length; i++)
+						options[All[i].getAttribute("A")] = All[i].getAttribute("A") + ": " + All[i].getAttribute("D");
+				
+					return ({"type":"select", "Options":options});
+				}
+				else {
+					return getDVPOptions(Attr);
+				}			
+			}
+			
+			function getDPD(ObjectID) {
+				// Attributes: DDI, Property, Trigger, Designator, [Parent], [Presentation]
+				var Attributes = {DDI:undefined, Property:undefined, Trigger:undefined, Designator:undefined};
+				
+				if(ObjectID == undefined) {
+					if(currentDPD == undefined) {
+						return;
+					}
+					ObjectID = currentDPD.replace("DPD","");
+				}
+				
+				var DPD = getByObjectID(ObjectID);
+				
+				// Attribute B: DDI
+				Attributes["DDI"] = DPD.getAttribute("B"); 
+				
+				// Attribute C: Property
+				Attributes["Property"] = DPD.getAttribute("C"); 
+				
+				// Attribute D: Triggger
+				Attributes["Trigger"] = DPD.getAttribute("D"); 
+				
+				// Attribute E: Designator
+				Attributes["Designator"] = DPD.getAttribute("E");			
+
+				// Parents
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var count = 1;
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						Attributes["Parent"+count] = All[i].parentNode.getAttribute("A");
+						count = count + 1;
+					} 
+				}
+				
+				if(DPD.getAttribute("F") != undefined) {
+					var DVPAttributes = getDVP(DPD.getAttribute("F"));
+					
+					for(Attr in DVPAttributes) {
+						if(!Attr.startsWith("Parent")) {
+							Attributes[Attr] = DVPAttributes[Attr];		
+						}
+					}
+					
+				}
+			
+				return Attributes;
+			}
+			
+			function delDPDParent(ObjectID, ParentDET) {
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var remaining_parents = 0;
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						if(All[i].parentNode.getAttribute("A") == ParentDET) {
+							// remove link from given parent
+							delDPD_Tree(ObjectID, ParentDET);
+							All[i].parentElement.removeChild(All[i]);
+						} else {
+							// count remaining parents
+							remaining_parents = remaining_parents + 1;
+							i++;
+						}
+					} else {
+						i++;
+					}
+				}
+				
+				// if there is no parents left, remove the DPD node
+				if(remaining_parents == 0) {
+					delDPD(ObjectID)
+				}
+					
+			}
+
+			function delDPD(ObjectID) {
+			
+				if(ObjectID == undefined) {
+					if(currentDPD == undefined) {
+						return;
+					}
+					ObjectID = currentDPD.replace("DPD","");
+				}
+				
+				// Remove from parents
+				var All = xmlDoc.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						delDPD_Tree(ObjectID, All[i].parentNode.getAttribute("A"));
+						All[i].parentElement.removeChild(All[i]);
+					} else {
+						i++;
+					}
+				}
+				
+				var DPD = getByObjectID(ObjectID);
+				
+				// remove value presentation
+				if(DPD.getAttribute("F") != undefined) {
+					delDVPParent(DPD.getAttribute("F"),ObjectID);
+				}
+				
+				// Remove object itself
+				xmlDoc.documentElement.removeChild(DPD);
+				
+				if(currentDPD == ("DPD" + ObjectID)) {
+					currentDPD = undefined;
+				}
+				
+				//updateAll();					
+			}
+			
+			
+			
+			function newDPT(Attributes) {
+				// Attributes: [Parent], DDI, Value, Designator, [Presentation]
+
+				// Find unused variables
+				var newObjectID;
+				for(var i= 1; i<65534 && newObjectID==undefined; i++) {
+					if( getByObjectID(i) == undefined) {
+						newObjectID = i;
+					}
+				}
+				
+				var DPT = xmlDoc.createElement("DPT");
+				
+				// Attribute A: Object ID unique inside a device description
+				DPT.setAttribute("A",newObjectID);
+
+				getByElementID(currentDVC).appendChild(DPT);
+								
+				if(Attributes["Parent1"] == undefined) {
+					Attributes["Parent1"] = currentDET;
+				}				
+				
+				valid = setDPT(jQuery.extend(Attributes,{ObjectID:newObjectID}));
+				
+				if(valid == false) 
+				{ 
+					DPT.parentElement.removeChild(DPT);
+					return "INVALID"; 
+				}
+				
+				// Create elements to for all parents
+				var count = 1;
+				while(Attributes["Parent"+count] != undefined) {
+					createDPT_Tree(newObjectID, Attributes["Parent"+count]);
+					count = count + 1;
+				}
+
+				return newObjectID;
+			}
+			
+			function setDPT(Attributes) {
+				// Attributes: ObjectID, DDI, Value, Designator, [Parent], [Presentation]
+				var DPT;
+				
+				if(Attributes["ObjectID"] == undefined) {
+					if( currentDPT != undefined) {
+						Attributes["ObjectID"] = currentDPT.replace("DPT","");
+					}
+					else {
+						return false;
+					}
+				}
+					
+				DPT = getByObjectID(Attributes["ObjectID"]) 
+							
+			
+				// Attribute B: DDI
+				if(Attributes["DDI"] != undefined) { DPT.setAttribute("B", Attributes["DDI"]); } 
+				
+				// Attribute C: Value
+				if(Attributes["Value"] != undefined) { DPT.setAttribute("C", Attributes["Value"]); } 
+				
+				// Attribute D: Designator
+				if(Attributes["Designator"] != undefined) { DPT.setAttribute("D", Attributes["Designator"]); } 				
+				
+				
+				// count how many parents there are already
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var oldcount = 0;
+				var oldParents = [];
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("A") == Attributes["ObjectID"]) {
+						oldParents.push(All[i].parentNode.getAttribute("A"));
+						oldcount = oldcount + 1;
+					} 
+				}
+				
+				// check if parents have changed
+				var count = 1;
+				while(Attributes["Parent"+count] != undefined || count < oldcount) {
+					var DET = getByElementID(Attributes["Parent"+count]);
+				
+					if(DET != undefined && oldParents.indexOf(Attributes["Parent"+count]) == -1) {
+						var DOR = xmlDoc.createElement("DOR");
+						DOR.setAttribute('A',Attributes["ObjectID"]);
+						DET.appendChild(DOR);
+					}
+					
+					count = count + 1;
+				}				
+
+				if(DPT.getAttribute("E") != undefined) {
+					// DVP atributes are included, but replace ObjectID and Parents first
+					var DPTAttributes = {};
+					
+					for(Attr in Attributes) {
+						if(!Attr.startsWith("Parent")) {
+							DPTAttributes[Attr] = Attributes[Attr];
+						}
+					}
+					
+					DPTAttributes["ObjectID"] = DPT.getAttribute("E");
+					DPTAttributes["Parent1"] = "DPT" + DPT.getAttribute("A");
+					
+					setDVP(DPTAttributes);
+				}
+				
+				// update information
+				//updateAll();
+			
+				return true;
+			}
+			
+			function getDPTOptions(Attr) {
+				if(Attr == "Value") {
+					return ({"type":"number" });
+				} else if (Attr.startsWith("Parent")) {
+					var options = {};
+					var All = xmlDoc.getElementsByTagName("DET");
+			
+					for (var i = 0; i < All.length; i++)
+						options[All[i].getAttribute("A")] = All[i].getAttribute("A") + ": " + All[i].getAttribute("D");
+				
+					return ({"type":"select", "Options":options});
+				}
+				else {
+					return getDVPOptions(Attr);
+				}			
+			}
+			
+			function getDPT(ObjectID) {
+				// Attributes: DDI, Value, Designator, [Parent], [Presentation]
+				var Attributes = {DDI:undefined, Value:undefined, Designator:undefined};
+				
+				if(ObjectID == undefined) {
+					if(currentDPT == undefined) {
+						return;
+					}
+					ObjectID = currentDPT.replace("DPT","");
+				}
+				
+				var DPT = getByObjectID(ObjectID);
+				
+				// Attribute B: DDI
+				Attributes["DDI"] = DPT.getAttribute("B"); 
+				
+				// Attribute C: Value
+				Attributes["Value"] = DPT.getAttribute("C"); 
+				
+				// Attribute D: Designator
+				Attributes["Designator"] = DPT.getAttribute("D");			
+
+				// Parents
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var count = 1;
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						Attributes["Parent"+count] = All[i].parentNode.getAttribute("A");
+						count = count + 1;
+					} 
+				}
+				
+				if(DPT.getAttribute("E") != undefined) {
+					// DVP atributes are included, but replace ObjectID and Parents first
+					var DPTAttributes = getDVP(DPT.getAttribute("E"));
+					
+					for(Attr in DPTAttributes) {
+						if(!Attr.startsWith("Parent")) {
+							Attributes[Attr] = DPTAttributes[Attr];		
+						}
+					}
+					
+				}
+			
+				return Attributes;
+			}
+			
+			function delDPTParent(ObjectID, ParentDET) {
+				var All = xmlDoc.getElementsByTagName('DOR');
+				var remaining_parents = 0;
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						if(All[i].parentNode.getAttribute("A") == ParentDET) {
+							// remove link from given parent
+							delDPT_Tree(ObjectID, ParentDET);
+							All[i].parentElement.removeChild(All[i]);
+						} else {
+							// count remaining parents
+							remaining_parents = remaining_parents + 1;
+							i++;
+						}
+					} else {
+						i++;
+					}
+				}
+				
+				// if there is no parents left, remove the DPT node
+				if(remaining_parents == 0) {
+					delDPT(ObjectID)
+				}
+					
+			}
+
+			function delDPT(ObjectID) {
+			
+				if(ObjectID == undefined) {
+					if(currentDPT == undefined) {
+						return;
+					}
+					ObjectID = currentDPT.replace("DPT","");
+				}
+				
+				// Remove from parents
+				var All = xmlDoc.getElementsByTagName('DOR');
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("A") == ObjectID) {
+						delDPT_Tree(ObjectID, All[i].parentNode.getAttribute("A"));
+						All[i].parentElement.removeChild(All[i]);
+					} else {
+						i++;
+					}
+				}
+				
+				
+				var DPT = getByObjectID(ObjectID);
+				
+				// remove value presentation
+				if(DPT.getAttribute("E") != undefined) {
+					delDVPParent(DPT.getAttribute("E"),ObjectID);
+				}
+				
+				// Remove object itself
+				xmlDoc.documentElement.removeChild(DPT);
+				
+				if(currentDPT == ("DPT" + ObjectID)) {
+					currentDPT = undefined;
+				}
+				
+				//updateAll();					
+			}
+			
+			
+			function newDVP(Attributes) {
+				// Attributes: [Parent], Offset, Scale, NumberOfDecimals, UnitDesignator
+
+				// Find unused variables
+				var newObjectID;
+				for(var i= 1; i<65534 && newObjectID==undefined; i++) {
+					if( getByObjectID(i) == undefined) {
+						newObjectID = i;
+					}
+				}
+				
+				var DVP = xmlDoc.createElement("DVP");
+				
+				// Attribute A: Object ID unique inside a device description
+				DVP.setAttribute("A",newObjectID);
+
+				getByElementID(currentDVC).appendChild(DVP);
+				
+				if(Attributes["Parent1"] == undefined) {
+					if(currentDPT != undefined) {
+						Attributes["Parent1"] = currentDPT;
+					} else {
+						Attributes["Parent1"] = currentDPD;
+					}
+				}				
+				
+				valid = setDVP(jQuery.extend(Attributes,{ObjectID:newObjectID}));
+				
+				if(valid == false) 
+				{ 
+					DVP.parentElement.removeChild(DVP);
+					return "INVALID"; 
+				}
+				
+				return newObjectID;
+			}
+			
+			
+			function setDVP(Attributes) {
+				// Attributes: [Parent], Offset, Scale, NumberOfDecimals, UnitDesignator
+				var DVP;
+				
+				if(Attributes["ObjectID"] == undefined) {
+					if( currentDVP != undefined) {
+						Attributes["ObjectID"] = currentDVP.replace("DVP","");
+					}
+					else {
+						return false;
+					}
+				}
+					
+				DVP = getByObjectID(Attributes["ObjectID"]) 
+							
+			
+				// Attribute B: Offset
+				if(Attributes["Offset"] != undefined) { DVP.setAttribute("B", Attributes["Offset"]); } 
+				
+				// Attribute C: Scale
+				if(Attributes["Scale"] != undefined) { DVP.setAttribute("C", Attributes["Scale"]); } 
+				
+				// Attribute D: NumberOfDecimals
+				if(Attributes["NumberOfDecimals"] != undefined) { DVP.setAttribute("D", Attributes["NumberOfDecimals"]); } 				
+				
+				// Attribute E: UnitDesignator
+				if(Attributes["UnitDesignator"] != undefined) { DVP.setAttribute("E", Attributes["UnitDesignator"]); } 				
+				
+				
+				// count how many parents there are already
+				var All = xmlDoc.getElementsByTagName('DPD');
+				var oldcount = 0;
+				var oldParents = [];
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("F") == Attributes["ObjectID"]) {
+						oldParents.push("DPD"+All[i].getAttribute("A"));
+						oldcount = oldcount + 1;
+					} 
+				}
+				
+				var All = xmlDoc.getElementsByTagName('DPT');
+				var oldcount = 0;
+				var oldParents = [];
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("E") == Attributes["ObjectID"]) {
+						oldParents.push("DPT"+All[i].getAttribute("A"));
+						oldcount = oldcount + 1;
+					} 
+				}
+				
+				// check if parents have changed
+				var count = 1;
+				while(Attributes["Parent"+count] != undefined || count < oldcount) {
+					if(Attributes["Parent"+count] != undefined) {
+						var DPD_DPT = getByObjectID(Attributes["Parent"+count].replace("DPD","").replace("DPT",""));
+						if(DPD_DPT != undefined && oldParents.indexOf(Attributes["Parent"+count]) == -1) {
+							if(DPD_DPT.nodeName == "DPD") {
+								DPD_DPT.setAttribute('F',Attributes["ObjectID"]);
+							} else if(DPD_DPT.nodeName == "DPT") {
+								DPD_DPT.setAttribute('E',Attributes["ObjectID"]);
+							}
+						}
+					}					
+					count = count + 1;
+				}				
+				
+				// update information
+				//updateAll();
+			
+				return true;
+			}
+			
+			function getDVPOptions(Attr) {
+				if(Attr == "Offset") {
+					return ({"type":"number" });
+				} else if(Attr == "Scale") {
+					return ({"type":"number" });
+				} else if(Attr == "NumberOfDecimals") {
+					return ({"type":"number" });
+				} else {
+					return ({"type":"text" });
+				}			
+			}
+			
+			function getDVP(ObjectID) {
+				// Attributes: Offset, Scale, NumberOfDecimals, UnitDesignator
+				var Attributes = {Offset:undefined, Scale:undefined, NumberOfDecimals:undefined, UnitDesignator:undefined};
+				
+				if(ObjectID == undefined) {
+					if(currentDVP == undefined) {
+						return;
+					}
+					ObjectID = currentDVP.replace("DVP","");
+				}
+				
+				var DVP = getByObjectID(ObjectID);
+				
+				// Attribute B: Offset
+				Attributes["Offset"] = DVP.getAttribute("B");
+				
+				// Attribute C: Scale
+				Attributes["Scale"] = DVP.getAttribute("C");
+				
+				// Attribute D: NumberOfDecimals
+				Attributes["NumberOfDecimals"] = DVP.getAttribute("D");
+				
+				// Attribute E: UnitDesignator
+				Attributes["UnitDesignator"] = DVP.getAttribute("E");
+	
+				// Parents
+				var All = [];
+				All.push.apply(All, xmlDoc.getElementsByTagName('DPD'));
+				All.push.apply(All, xmlDoc.getElementsByTagName('DPT'));
+				var count = 0;
+				for (var i = 0; i < All.length; i++) {
+					if(All[i].getAttribute("F") == Attributes["ObjectID"]) {
+						Attributes["Parent"+count] = All[i].nodeName + All[i].getAttribute("A");
+						count = count + 1;
+					} 
+				}
+			
+				return Attributes;
+			}
+			
+			function delDVPParent(ObjectID, Parent) {
+				var All = xmlDoc.getElementsByTagName('DPD');
+				var remaining_parents = 0;
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("F") == ObjectID) {
+						if(All[i].getAttribute("A") == Parent) {
+							// remove link from given parent
+							All[i].removeAttribute("F");
+						} else {
+							// count remaining parents
+							remaining_parents = remaining_parents + 1;
+							i++;
+						}
+					} else {
+						i++;
+					}
+				}
+				
+				All = xmlDoc.getElementsByTagName('DPT');
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("E") == ObjectID) {
+						if(All[i].getAttribute("A") == Parent) {
+							// remove link from given parent
+							All[i].removeAttribute("E");
+						} else {
+							// count remaining parents
+							remaining_parents = remaining_parents + 1;
+							i++;
+						}
+					} else {
+						i++;
+					}
+				}
+				
+				// if there is no parents left, remove the DVP node
+				if(remaining_parents == 0) {
+					delDVP(ObjectID)
+				}
+					
+			}
+
+			function delDVP(ObjectID) {
+			
+				if(ObjectID == undefined) {
+					if(currentDVP == undefined) {
+						return;
+					}
+					ObjectID = currentDVP.replace("DVP","");
+				}
+				
+				// Remove from parents
+				var All = xmlDoc.getElementsByTagName('DPD');
+				var remaining_parents = 0;
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("F") == ObjectID) {
+						// remove link from parent
+						All[i].removeAttribute("F");
+					} else {
+						i++;
+					}
+				}
+				
+				All = xmlDoc.getElementsByTagName('DPT');
+				for (var i = 0; i < All.length;) {
+					if(All[i].getAttribute("E") == ObjectID) {
+						// remove link from parent
+						All[i].removeAttribute("E");
+					} else {
+						i++;
+					}
+				}
+				
+				// Remove object itself
+				xmlDoc.documentElement.removeChild(getByObjectID(ObjectID));
+				
+				if(currentDVP == ("DVP" + ObjectID)) {
+					currentDVP = undefined;
+				}
+				
+				//updateAll();					
+			}
+			
+			
+			<!-- ************************************** -->
+			<!-- GEOMETRY drag & drop & select elements -->
+			<!-- ************************************** -->		
+		
+			function makeAbsoluteContext(element) {
+				return function(x,y) {
+					var pt = svghandle._svg.createSVGPoint();
+					pt.x = x;
+					pt.y = y;
+					if(element != null) {
+						pt = pt.matrixTransform(element.getScreenCTM());
+					}
+					else {
+						pt = pt.matrixTransform(svghandle._svg.getScreenCTM());
+					}
+					
+					return pt;
+				};
+			}
+			
+			function makeElementContext(element) {
+				return function(x,y) {
+					var pt = svghandle._svg.createSVGPoint();
+					pt.x = x;
+					pt.y = y;
+					if(element != null) {
+						pt = pt.matrixTransform(element.getScreenCTM().inverse());
+					}
+					else {
+						pt = pt.matrixTransform(svghandle._svg.getScreenCTM().inverse());
+					}
+
+					return pt;
+				};
+			}
+			
+			function pxToM(px) {
+				return px/50;
+			}
+			
+			function mToPx(m) {
+				return m*50;
+			}
+			
+			function btnSVGnavN() {
+				graph_sp.y = graph_sp.y - 10;
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 
+			}
+			
+			function btnSVGnavW() {
+				graph_sp.x = graph_sp.x - 10;
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 			
+			}
+			
+			function btnSVGnavE() {
+				graph_sp.x = graph_sp.x + 10;
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 			
+			}
+			
+			function btnSVGnavS() {
+				graph_sp.y = graph_sp.y + 10;
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 
+			}
+			
+			function btnSVGPlus() {
+				scale = scale + 0.05;
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 
+			}
+			
+			function btnSVGMinus() {
+				scale = scale - 0.05;
+				if(scale < 0.1) {
+					scale = 0.1;
+				}
+				var translate =  'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') ';
+				svghandle.change(graph_basegroup, {transform: translate}); 
+			}
+		
+			function initGeometry() {
+			
+				$('section').prepend("<div id='geometryGraph' class='svgdiv' style='width: " + graph_width + "px; height: " + graph_height + "px;'></div>")
+			
+				$('#geometryGraph').svg({onLoad: function(svg) { 
+						
+						svghandle = svg;
+						
+						<!-- initial graphics -->						
+						var surface = svg.rect(0, 0, '99%', '99%', {id: 'surface', fill: 'white'}); 
+						$(surface).mousemove(dragging).mouseup(endDrag); 
+						
+						
+						graph_sp = svghandle._svg.createSVGPoint();
+						graph_sp.x = graph_width / 2;
+						graph_sp.y = graph_height / 4 * 3;
+						graph_basegroup = svghandle.group("BASEGROUP",{transform: 'translate(' + graph_sp.x.toString() + ',' + graph_sp.y.toString() + ') scale(' + scale + ' ' + scale + ') '}); 
+ 
+						<!-- NEW elements for drag&drop -->
+						
+						var circle = [];
+						
+						var translate = 'translate(' + graph_width / 4 + ',' + graph_height/10 + ')';
+						var g = svghandle.group("DESCRIPTION_GROUP", {transform: translate, display:'none'}); 
+						
+						svg.rect(g, 0,0, graph_width/2, graph_height/3, {id: 'DESCRIPTION_BOX', stroke: 'black', fill: 'white'}); 
+				
+						var text = [];
+						text[0] = svg.text(g,10,15,"");
+						for(var i = 1; i<20; i++) {
+							text[i] = svg.text(g, 10,20+i*15,"");
+						}
+						
+						
+						
+						for(var i=0; i<7; i++) {
+							var color = DETColor[(i+1).toString()];						
+							circle[i] = svg.circle(10, 10+i*20, 5,  {id:"SELECT_"+DET_TYPE_NAME[i+1], fill: color, stroke: color, strokeWidth: 3});
+							svg.text(20,15+i*20,DET_TYPE_NAME[i+1]);
+							
+							$(circle[i]).hover( (function(i) { 
+								return function(event) { 
+									var description = DET_TYPE_DESCRIPTION[i+1].split("\n");
+									for(var j=0; j<description.length; j++)
+										text[j].textContent = description[j];
+									svghandle.change(g, {display:'inherit'});
+								}; 
+							})(i) , (function(i) {
+								return function(event) { 
+									for(var i = 0; i<20; i++) {
+										text[i].textContent = "";
+									}
+									svghandle.change(g, {display:'none'});
+								}; 
+							})(i) );
+							
+							$(circle[i]).mousedown( (function(i, sp) {
+								return function(event) {
+									var newID = newDET({Type:(i+1).toString(), Parent:currentDET});
+									if(newID == "INVALID") {
+										return;
+									}
+									startDrag(event, svghandle.getElementById(newID + "_GROUP"))
+								};
+							})(i,makeAbsoluteContext(circle[i])(circle[i].cx.baseVal.value,circle[i].cy.baseVal.value))).mousemove(dragging);
+						}						
+						
+						<!-- coordinate axes -->
+						svghandle.polyline([[graph_width-55, 17], [graph_width-50, 10],[graph_width-45, 17],[graph_width-50, 10],[graph_width-50, 50]], {id:"AXES", fill: 'none', stroke: 'red', strokeWidth: 1});
+						svghandle.polyline([[graph_width-50, 50],[graph_width-10, 50],[graph_width-17, 45],[graph_width-10, 50],[graph_width-17, 55]], {id:"AXES", fill: 'none', stroke: 'green', strokeWidth: 1});
+						svghandle.text(graph_width-45, 30, "X", {id: "Xdirection", fill: "red"});
+						svghandle.text(graph_width-30, 45, "Y", {id: "Ydirection", fill: "green"});
+						
+					} 
+				});
+				
+			}
+			
+			<!-- Create new DET element to SVG canvas -->
+			function createDET_SVG(newID) {
+				
+				var Attributes = getDET(newID);
+				
+				var parent = null;
+				
+				if(Attributes["Parent"] != undefined) {
+					parent = svghandle.getElementById(Attributes["Parent"] + "_GROUP");
+				}
+				
+				var parentgroup = parent;
+				var point = svghandle._svg.createSVGPoint();
+				point.x = 0;
+				point.y = 0;
+				if(parent == null) {
+					parentgroup = graph_basegroup;
+				} else {
+					var DPT_X = getByDDI(newID, "87");
+					if(DPT_X != undefined) { point.x = mToPx(DPT_X.getAttribute("C") * 0.001); };
+					
+					var DPT_Y = getByDDI(newID, "86");
+					if(DPT_Y != undefined) { point.y = -mToPx(DPT_Y.getAttribute("C") * 0.001); };
+				}
+				
+				var translate = 'translate(' + point.x.toString() + ',' + point.y.toString() + ')';
+				var g = svghandle.group(parentgroup, newID + "_GROUP", {transform: translate}); 
+				
+				var element = svghandle.circle(g, 0, 0, 5,  {
+						id: newID+"_DOT", 
+						fill: DETColor[Attributes["Type"]], 
+						stroke: DETColor[Attributes["Type"]], 
+						strokeWidth: 3,
+					}
+				);
+				$(element).mousedown(elementClicked);
+				
+				svghandle.text(g,10,5,DET_TYPE_NAME[Attributes["Type"]], {id: newID+"_TXT1"});
+				svghandle.text(g,10,20,newID, {id: newID+"_TXT2"});
+				if(Attributes["Designator"] != undefined) {
+					svghandle.text(g,10,35,Attributes["Designator"], {id: newID+"_TXT3"});
+				} else {
+					svghandle.text(g,10,35,"", {id: newID+"_TXT3"});
+				}
+				
+				if(parent != null) {
+					svghandle.polyline(g,[[0, 0],[-point.x, 0],[-point.x, -point.y]], {id:newID+"_LINE", fill: 'none', stroke: 'black', strokeWidth: 1});
+					svghandle.text(g,-point.x/2,15, pxToM(point.x).toString(), {id: newID+"_DX", display: 'none'});
+					svghandle.text(g,-point.x+5,-point.y/2, pxToM(point.y).toString(), {id: newID+"_DY", display: 'none'});
+				}
+				
+				$(svghandle.polyline(g,[[0, 0],[0, 0]], {id:newID+"_LINE_WL", fill: 'none', stroke: 'black', strokeWidth: 1, display:'none'})).mousedown(elementBoxClicked);
+				$(svghandle.polyline(g,[[0, 0],[0, 0]], {id:newID+"_LINE_WR", fill: 'none', stroke: 'black', strokeWidth: 1, display:'none'})).mousedown(elementBoxClicked);
+				$(svghandle.polyline(g,[[0, 0],[0, 0]], {id:newID+"_LINE_LU", fill: 'none', stroke: 'black', strokeWidth: 1, display:'none'})).mousedown(elementBoxClicked);
+				$(svghandle.polyline(g,[[0, 0],[0, 0]], {id:newID+"_LINE_LD", fill: 'none', stroke: 'black', strokeWidth: 1, display:'none'})).mousedown(elementBoxClicked);
+				
+				return g;
+			}
+			
+			function delDET_SVG(DET_ID) {
+				var element = svghandle.getElementById(DET_ID + "_DOT");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_TXT1");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_TXT2");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_TXT3");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_LINE");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_DX");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_DY");
+				if(element != undefined) element.parentNode.removeChild(element);
+				
+				var element = svghandle.getElementById(DET_ID + "_GROUP");
+				if(element != undefined) element.parentNode.removeChild(element);
+			}
+			
+			<!-- Remember where we started -->
+			function startDrag(event, element) { 
+			
+				drag_element = element;
+				$(drag_element).mouseup(endDrag); 
+				
+				svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_DX")), {display: 'inherit'});
+				svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_DY")), {display: 'inherit'});
+				svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_LINE")), {stroke: 'red'}); 
+				
+				event.preventDefault(); 
+			} 
+			
+			<!-- Change group position -->
+			function moveGroup(group, point) { 
+			
+				var translate = 'translate(' + point.x.toString() + ',' + point.y.toString() + ')';
+				svghandle.change(group, {transform: translate}); 
+				svghandle.change(svghandle.getElementById(group.id.replace("_GROUP","_LINE")), {points: [[0, 0],[-point.x, 0],[-point.x, -point.y]]}); 
+				
+				var txtdx = svghandle.getElementById(group.id.replace("_GROUP","_DX"))
+				if (txtdx != null) {
+					svghandle.change(txtdx, {x: -point.x/2});
+					txtdx.textContent = pxToM(point.x).toString();
+				}
+				
+				var txtdy = svghandle.getElementById(group.id.replace("_GROUP","_DY"))
+				if (txtdy != null) {
+					svghandle.change(txtdy, {x: -point.x+5, y: -point.y/2});
+					txtdy.textContent = -pxToM(point.y).toString();
+				}
+
+				var DET_ID = group.id.replace("_GROUP","");
+				
+				var DPT_X = getByDDI(DET_ID, "87");
+				if(DPT_X != undefined) {
+					DPT_X.setAttribute("C",Math.round(pxToM(point.x)*1000));
+				}					
+				
+				var DPT_Y = getByDDI(DET_ID, "86");
+				if(DPT_Y != undefined) {
+					DPT_Y.setAttribute("C",Math.round(-pxToM(point.y)*1000));
+				}			
+				
+			}
+			
+			 
+			<!-- Provide feedback as we drag -->
+			function dragging(event) { 
+			
+				if (drag_element) { 
+					var point = makeElementContext(drag_element.parentNode)(event.clientX,event.clientY);
+									
+					moveGroup(drag_element, point);
+					
+					event.preventDefault(); 
+				}
+				
+				if (resize_element) {
+				
+					var point = makeElementContext(resize_element.parentNode)(event.clientX,event.clientY);
+					
+					if(resize_element.id.endsWith("_LINE_WL") || resize_element.id.endsWith("_LINE_WR")) {
+						var DPT_width = getByDDI(currentDET, "9B");
+						if(DPT_width != undefined) {
+							DPT_width.setAttribute("C", Math.abs(Math.round(pxToM(point.x) * 2000)))
+						}
+					} else if(resize_element.id.endsWith("_LINE_LU") || resize_element.id.endsWith("_LINE_LD")) {
+						var DPT_height = getByDDI(currentDET, "9A");
+						if(DPT_height != undefined) {
+							DPT_height.setAttribute("C", Math.abs(Math.round(pxToM(point.y) * 2000)))
+						}
+					}
+					
+					event.preventDefault(); 
+					
+					updateGeometry();
+				}
+			} 
+			 
+			<!-- Draw where we finish -->
+			function endDrag(event) { 
+				if (drag_element) { 
+					
+				
+					$(drag_element).mouseup(null);
+					
+					var dot = svghandle.getElementById(currentDET+"_DOT")
+					if (dot != null) {
+						svghandle.change(dot, {stroke: dot.fill}); 
+					}
+					
+					svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_DX")), {display: 'none'});
+					svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_DY")), {display: 'none'});
+					svghandle.change(svghandle.getElementById(drag_element.id.replace("_GROUP","_LINE")), {stroke: 'black'}); 
+									
+					selectElement(drag_element.id.replace("_GROUP",""));
+					drag_element = null;
+					
+					event.preventDefault(); 
+				}
+				
+				if(resize_element) {
+				
+					$(resize_element).mouseup(null);
+					
+					if(resize_element.id.endsWith("_LINE_WL") || resize_element.id.endsWith("_LINE_WR")) {
+						svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_WL","_LINE_WR")), {stroke: 'black'}); 
+						svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_WR","_LINE_WL")), {stroke: 'black'});
+					} else if(resize_element.id.endsWith("_LINE_LU") || resize_element.id.endsWith("_LINE_LD")) {
+						svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_LU","_LINE_LD")), {stroke: 'black'}); 
+						svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_LD","_LINE_LU")), {stroke: 'black'});
+					}
+				
+					resize_element = null;
+					
+					updateAll();
+				
+					event.preventDefault(); 
+				}
+			} 
+						
+			<!-- Start drag element -->
+			function elementClicked(evt) {
+				startDrag(evt, evt.target.parentNode);
+			} 
+			
+			
+			function elementBoxClicked(evt) {
+				resize_element = evt.target;
+				
+				
+				if(resize_element.id.endsWith("_LINE_WL") || resize_element.id.endsWith("_LINE_WR")) {
+					svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_WL","_LINE_WR")), {stroke: 'red'}); 
+					svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_WR","_LINE_WL")), {stroke: 'red'});
+				} else if(resize_element.id.endsWith("_LINE_LU") || resize_element.id.endsWith("_LINE_LD")) {
+					svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_LU","_LINE_LD")), {stroke: 'red'}); 
+					svghandle.change(svghandle.getElementById(resize_element.id.replace("_LINE_LD","_LINE_LU")), {stroke: 'red'});
+				}
+					
+				$(resize_element).mouseup(endDrag); 
+				
+				evt.preventDefault(); 
+			}
+			
+			function updateGeometry() {
+				var dot = svghandle.getElementById(oldDET+"_DOT")
+				if (dot != null) {
+					svghandle.change(dot, {stroke: dot.fill}); 
+				}
+				
+				if(currentDET != undefined) {
+					var dot = svghandle.getElementById(currentDET+"_DOT");
+					svghandle.change(dot, {stroke: 'red'}); 	
+				}
+				
+				var DET_elements = xmlDoc.getElementsByTagName('DET');
+				for(var i=0; i<DET_elements.length; i++) {
+					
+					var DET_ID = DET_elements[i].getAttribute("A");
+					var dot = svghandle.getElementById(DET_ID+"_DOT");
+					var Attributes = getDET(DET_ID);
+				
+					if(Attributes["Designator"] != undefined) {
+						svghandle.getElementById(DET_ID+"_TXT3").textContent = Attributes["Designator"];
+					}
+					
+					if(Attributes["Type"] != undefined) {
+						svghandle.getElementById(DET_ID+"_TXT1").textContent = DET_TYPE_NAME[Attributes["Type"]];
+						svghandle.change(dot, {fill: DETColor[Attributes["Type"]]}); 
+					}
+				
+					if(Attributes["Parent"] != undefined && Attributes["Parent"].startsWith("DET")) {
+						
+						if(dot.parentNode.parentNode.id.replace("_GROUP","") != Attributes["Parent"]) {
+							var newGroup = svghandle.getElementById(Attributes["Parent"]+"_GROUP");
+							var oldGroup = dot.parentNode.parentNode;
+							
+							var absPoint = makeAbsoluteContext(dot)(0,0);
+							var point = makeElementContext(newGroup)(absPoint.x,absPoint.y);
+	
+							moveGroup(dot.parentNode, point);
+							
+							oldGroup.removeChild(dot.parentNode);
+							newGroup.appendChild(dot.parentNode);
+						} else {
+							// IF there is parent, then the position is restricted by property
+							var point = svghandle._svg.createSVGPoint();
+							point.x = 0;
+							point.y = 0;
+							
+							var DPT_X = getByDDI(DET_ID, "87");
+							if(DPT_X != undefined) { point.x = mToPx(DPT_X.getAttribute("C") * 0.001); };
+							
+							var DPT_Y = getByDDI(DET_ID, "86");
+							if(DPT_Y != undefined) { point.y = -mToPx(DPT_Y.getAttribute("C") * 0.001); };
+							
+							moveGroup(dot.parentNode, point);					
+						} 
+						
+					}
+					
+					var DPT_height = getByDDI(DET_ID, "9A");
+					var height = 20;
+					
+					if(DPT_height != undefined) {
+						if(DPT_height.getAttribute("C") != undefined) {
+							height = mToPx(DPT_height.getAttribute("C") * 0.0005); 
+						} else {
+							DPT_height = undefined;
+						}
+					} 
+					
+					var DPT_width = getByDDI(DET_ID, "9B");
+					var width = 20;
+					
+					if(DPT_width != undefined) {
+						if(DPT_width.getAttribute("C") != undefined) {
+							width = mToPx(DPT_width.getAttribute("C") * 0.0005); 
+						} else {
+							DPT_width = undefined;
+						}
+					} 
+					
+					if(DPT_height != undefined) {
+						var LU = svghandle.getElementById(DET_ID+"_LINE_LU");
+						var LD = svghandle.getElementById(DET_ID+"_LINE_LD");
+						
+						svghandle.change(LU, {display: 'inherit'});
+						svghandle.change(LD, {display: 'inherit'});
+						
+						svghandle.change(LU, {points: [[-width, height],[width, height]]}); 	
+						svghandle.change(LD, {points: [[-width, -height],[width, -height]]}); 	
+					} else {
+						var LU = svghandle.getElementById(DET_ID+"_LINE_LU");
+						var LD = svghandle.getElementById(DET_ID+"_LINE_LD");
+						
+						svghandle.change(LU, {display: 'none'});
+						svghandle.change(LD, {display: 'none'});
+					}
+					
+					if(DPT_width != undefined) {
+						var WL = svghandle.getElementById(DET_ID+"_LINE_WL");
+						var WR = svghandle.getElementById(DET_ID+"_LINE_WR");
+						
+						svghandle.change(WL, {display: 'inherit'});
+						svghandle.change(WR, {display: 'inherit'});
+						
+						svghandle.change(WL, {points: [[width, -height],[width, height]]}); 	
+						svghandle.change(WR, {points: [[-width, -height],[-width, height]]}); 	
+					} else {
+						var WL = svghandle.getElementById(DET_ID+"_LINE_WL");
+						var WR = svghandle.getElementById(DET_ID+"_LINE_WR");
+	
+						svghandle.change(WL, {display: 'none'});
+						svghandle.change(WR, {display: 'none'});
+					}
+				}
+			}					
+			
+			<!-- **************** -->
+			<!-- Interactive tree -->
+			<!-- **************** -->
+			
+			function initTree() {
+				activateTree(document.getElementById("DVCList"));
+			}			
+			
+			// This function traverses the list and add links 
+			// to nested list items
+			function activateTree(oList) {
+			  // Collapse the tree
+			  for (var i=0; i < oList.getElementsByTagName("ul").length; i++) {
+				//oList.getElementsByTagName("ul")[i].style.display="none";            
+			  }             			
+			  // Add the click-event handler to the list items
+			  if (oList.addEventListener) {
+				oList.addEventListener("click", toggleBranch, false);
+			  } else if (oList.attachEvent) { // For IE
+				oList.attachEvent("onclick", toggleBranch);
+			  }
+			  // Make the nested items look like links
+			  addLinksToBranches(oList);
+			}
+		
+			// This is the click-event handler
+			function toggleBranch(event) {
+			  var oBranch, cSubBranches;
+			  if (event.target) {
+				oBranch = event.target;
+			  } else if (event.srcElement) { // For IE
+				oBranch = event.srcElement;
+			  }
+			  
+			  // select element to edit properties
+			  
+			  var idx_dpt = oBranch.id.indexOf("DPT");
+			  var idx_dpd = oBranch.id.indexOf("DPD");
+			  if(idx_dpt < 0 && idx_dpd < 0) {
+				selectElement(oBranch.id.replace("_TREE",""));
+			  } else if(idx_dpd < 0) {
+				selectElement(oBranch.id.substr(idx_dpt).replace("_TREE",""));
+			  } else {
+				selectElement(oBranch.id.substr(idx_dpd).replace("_TREE",""));
+			  }
+			  
+			  cSubBranches = oBranch.getElementsByTagName("ul");
+			  if (cSubBranches.length > 0) {
+				if (cSubBranches[0].style.display == "block") {
+				  cSubBranches[0].style.display = "none";
+				  
+				  oBranch.innerHTML = "+" + oBranch.innerHTML.substr(1);
+				  
+				} else {
+				  cSubBranches[0].style.display = "block";
+				  
+				  oBranch.innerHTML = "-" + oBranch.innerHTML.substr(1);
+				}
+			  }
+			}
+		
+			// This function makes nested list items look like links
+			function addLinksToBranches(oList) {
+			  var cBranches = oList.getElementsByTagName("li");
+			  var i, n, cSubBranches;
+			  if (cBranches.length > 0) {
+				for (i=0, n = cBranches.length; i < n; i++) {
+				  cSubBranches = cBranches[i].getElementsByTagName("ul");
+				  if (cSubBranches.length > 0) {
+					addLinksToBranches(cSubBranches[0]);
+					cBranches[i].className = "HandCursorStyle";
+					cSubBranches[0].className = "HandCursorStyle";
+				  }
+				}
+			  }
+			}
+			
+			function allowDropTree(ev) {
+				ev.preventDefault();
+			}
+
+			function dragTree(ev) {
+				ev.dataTransfer.setData("text", ev.target.id.replace("_TREE",""));
+			}
+			
+			function dropTree(ev) {
+				ev.preventDefault();
+				
+				
+
+				var ID = ev.dataTransfer.getData("text");
+				
+				var idx_dpt = ID.indexOf("DPT");
+				var idx_dpd = ID.indexOf("DPD");
+				
+				if(idx_dpt < 0 && idx_dpd < 0) {
+					// dragged object was DET
+					selectElement(ID);
+					
+					if(ev.target.id == "TRASH") {
+						// Dropped into trashbin
+						delDET();
+					} else {
+						var parentID = ev.target.id.replace("_TREE","")
+						var idx_dpt2 = parentID.indexOf("_DPT");
+						var idx_dpd2 = parentID.indexOf("_DPD");
+						
+						// dropped to DPT --> get DPT parent
+						if(idx_dpt2 > 0) {
+							parentID = parentID.substr(0,idx_dpt2);
+						}
+						
+						// dropped to DPD --> get DPD parent
+						if(idx_dpd2 > 0) {
+							parentID = parentID.substr(0,idx_dpd2);
+						}
+							
+						setDET({Parent: parentID});
+					}
+				} else if(idx_dpd < 0) {
+					// dragged element was DPT
+					selectElement(ID.substr(idx_dpt).replace("_TREE",""));
+					
+					if(ev.target.id == "TRASH") {
+						// Dropped into trashbin
+						delDPTParent(ID.substr(idx_dpt+3).replace("_TREE",""), ID.substr(0,idx_dpt-1))
+					} else {
+						var parentID = ev.target.id.replace("_TREE","")
+						var idx_dpt2 = parentID.indexOf("_DPT");
+						var idx_dpd2 = parentID.indexOf("_DPD");
+						
+						// dropped to DPT --> get DPT parent
+						if(idx_dpt2 > 0) {
+							parentID = parentID.substr(0,idx_dpt2);
+						}
+						
+						// dropped to DPD --> get DPD parent
+						if(idx_dpd2 > 0) {
+							parentID = parentID.substr(0,idx_dpd2);
+						}
+							
+						setDPT({Parent1: parentID});
+					}
+				} else {
+					// dragged element was DPD
+					selectElement(ID.substr(idx_dpd).replace("_TREE",""));
+					
+					if(ev.target.id == "TRASH") {
+						// Dropped into trashbin
+						delDPDParent(ID.substr(idx_dpd+3).replace("_TREE",""), ID.substr(0,idx_dpd-1))
+					} else {
+						var parentID = ev.target.id.replace("_TREE","")
+						var idx_dpt2 = parentID.indexOf("_DPT");
+						var idx_dpd2 = parentID.indexOf("_DPD");
+						
+						// dropped to DPT --> get DPT parent
+						if(idx_dpt2 > 0) {
+							parentID = parentID.substr(0,idx_dpt2);
+						}
+						
+						// dropped to DPD --> get DPD parent
+						if(idx_dpd2 > 0) {
+							parentID = parentID.substr(0,idx_dpd2);
+						}
+							
+						setDPD({Parent1: parentID});
+					}
+				}
+				
+				updateAll();
+			}
+
+			
+			function createDVC_Tree(newID) {
+			
+				Attributes = getDVC(newID);
+				
+				parent = document.getElementById("DVCList");
+				
+				li = document.createElement('li');
+				li.setAttribute("id",newID+"_TREE");
+				li.setAttribute("draggable","true");
+				li.setAttribute("ondrop","dropTree(event)");
+				li.setAttribute("ondragover","allowDropTree(event)");
+				
+				var Designator = Attributes["Designator"];
+				if(Designator == undefined) {
+					Designator = "";
+				}
+				
+				li.innerHTML = "- " + newID + " <b class='Designator'>" + Designator + "</b>";
+				
+				parent.appendChild(li);
+				li.appendChild(document.createElement('ul'));
+				
+				addLinksToBranches(parent);
+			}
+						
+			function createDET_Tree(newID) {
+				
+				Attributes = getDET(newID);
+				
+				var parent = null;
+				if(Attributes["Parent"] == undefined) {
+					parent = document.getElementById(currentDVC+"_TREE");
+				}
+				else {
+					parent = document.getElementById(Attributes["Parent"]+"_TREE");
+				}
+				
+				var ul = parent.getElementsByTagName("ul")[0];
+				
+				li = document.createElement('li');
+				li.setAttribute("id",newID+"_TREE");
+				li.setAttribute("draggable","true");
+				li.setAttribute("ondragstart","dragTree(event)");
+				li.setAttribute("ondrop","dropTree(event)");
+				li.setAttribute("ondragover","allowDropTree(event)");
+				
+				var Designator = Attributes["Designator"];
+				if(Designator == undefined) {
+					Designator = "";
+				}
+				
+				li.innerHTML = "- " + newID + " <b class='Designator'>" + Designator + "</b>";
+				
+				ul.appendChild(li);
+				li.appendChild(document.createElement('ul'));
+				
+				addLinksToBranches(ul);
+			}
+			
+			function delDET_Tree(DET_ID) {
+				var det = document.getElementById(DET_ID+"_TREE");
+				det.parentNode.removeChild(det);
+			}
+			
+			
+			function createDPT_Tree(newID, parentDET) {
+				
+				var Attributes = getDPT(newID);
+				var parent = document.getElementById(parentDET+"_TREE");
+				
+				var ul = parent.getElementsByTagName("ul")[0];
+				
+				li = document.createElement('li');
+				li.setAttribute("id", parentDET + "_DPT" + newID+"_TREE");
+				li.setAttribute("draggable","true");
+				li.setAttribute("ondragstart","dragTree(event)");
+				
+				li.innerHTML = "* DPT" + newID + " <b class='Designator'>" + Attributes["Designator"] + "</b>";
+				
+				ul.appendChild(li);
+			}
+			
+			function delDPT_Tree(dptID, parentDET) {
+				var dpt = document.getElementById(parentDET + "_DPT" + dptID + "_TREE");
+				dpt.parentNode.removeChild(dpt);
+			}
+			
+			function createDPD_Tree(newID, parentDET) {
+				
+				var Attributes = getDPD(newID);
+				var parent = document.getElementById(parentDET+"_TREE");
+				
+				var ul = parent.getElementsByTagName("ul")[0];
+				
+				li = document.createElement('li');
+				li.setAttribute("id", parentDET + "_DPD" + newID+"_TREE");
+				li.setAttribute("draggable","true");
+				li.setAttribute("ondragstart","dragTree(event)");
+				
+				li.innerHTML = "* DPD" + newID + " <b class='Designator'>" + Attributes["Designator"] + "</b>";
+				
+				ul.appendChild(li);
+			}
+			
+			function delDPD_Tree(dpdID, parentDET) {
+				var dpd = document.getElementById(parentDET + "_DPD" + dpdID + "_TREE");
+				dpd.parentNode.removeChild(dpd);
+			}
+			
+			function UpdateTree() {
+				
+				if( currentDVC != undefined) {
+					var dvc = document.getElementById(currentDVC+"_TREE");
+					var Attributes = getDVC();
+	
+					if(Attributes["Designator"] != undefined) {
+						dvc.getElementsByClassName("Designator")[0].innerHTML = Attributes["Designator"];
+					}
+				}
+				
+				if( currentDET != undefined) {
+					var det = document.getElementById(currentDET+"_TREE");
+					var Attributes = getDET();
+	
+					if(Attributes["Designator"] != undefined) {
+						det.getElementsByClassName("Designator")[0].innerHTML = Attributes["Designator"];
+					}			
+					
+					if(Attributes["Parent"] != undefined) {
+					
+						if(det.parentNode.parentNode.id != Attributes["Parent"] + "_TREE") {
+							det.parentNode.removeChild(det);
+							var parent = document.getElementById(Attributes["Parent"] + "_TREE");
+							var ul = parent.getElementsByTagName("ul")[0];
+							
+							ul.appendChild(det);
+						}
+					}
+				}
+				
+				if( currentDPT != undefined) { 
+					// Go through all parents
+					var Attributes = getDPT();
+					var count = 1;
+					while(Attributes["Parent"+count] != undefined) {
+						var parentDET = Attributes["Parent"+count];
+						var dpt = document.getElementById(parentDET + "_" + currentDPT + "_TREE");
+						
+						if(dpt == undefined) {
+							createDPT_Tree(currentDPT.replace("DPT",""), parentDET)
+						} else {
+							if(Attributes["Designator"] != undefined) {
+								dpt.getElementsByClassName("Designator")[0].innerHTML = Attributes["Designator"];
+							}
+						}
+						
+						count = count + 1;
+					}					
+				}
+				
+				if( currentDPD != undefined) { 
+					// Go through all parents
+					var Attributes = getDPD();
+					var count = 1;
+					while(Attributes["Parent"+count] != undefined) {
+						var parentDET = Attributes["Parent"+count];
+						var dpd = document.getElementById(parentDET + "_" + currentDPD + "_TREE");
+						
+						if(dpd == undefined) {
+							createDPD_Tree(currentDPD.replace("DPD",""), parentDET)
+						} else {
+							if(Attributes["Designator"] != undefined) {
+								dpd.getElementsByClassName("Designator")[0].innerHTML = Attributes["Designator"];
+							}
+						}
+						
+						count = count + 1;
+					}					
+				}
+			}
+			
+			
+			<!-- *************** -->
+			<!-- Property editor -->
+			<!-- *************** -->
+			
+			function updateTable() {
+				
+				
+				// clear old table
+				var table = document.getElementById("tableProperties");
+				var tbody = table.getElementsByTagName("tbody")[0];
+				if(tbody != null) {
+					table.removeChild(tbody);
+				}
+				
+				$("#ElementDescription").html("");
+
+
+				document.getElementById("btnNewDPT").style.display = "none";
+				document.getElementById("btnNewDPD").style.display = "none";
+				document.getElementById("btnNewDVP").style.display = "none";
+				document.getElementById("btnDeleteDVP").style.display = "none";
+				document.getElementById("divDPTDPDAttach").style.display = "none";
+				document.getElementById("divDVPAttach").style.display = "none";
+				
+				
+				// create new table
+				var tbody = document.createElement('tbody');	
+				table.appendChild(tbody);
+				var Attributes = {};
+				
+				// EDITOR TYPE:				
+				if(currentDPD != null) {
+					// show device element property editor
+					Attributes = getDPD();
+					
+					designator = "";
+					if(Attributes["Designator"] != undefined) {
+						designator = Attributes["Designator"];
+					}
+					
+					$("#SelectedElement").html(currentDPD + " " + designator);
+					
+					// update description
+					if(Attributes["DDI"] != undefined) {
+						var DPD_DDE = DDE[Attributes["DDI"].toUpperCase().replace(/\b(0(?!\b))+/g, "")];
+						console.log(DPD_DDE)
+						if(DPD_DDE != undefined) {
+							var content = "";
+						
+							content += DPD_DDE.Definition.split("\n").join("<br/>");
+							content += "<br><br><b>Comment:</b> " + DPD_DDE.Comment.split("\n").join("<br/>");
+							content += "<br><br><b>DeviceClasses:</b><br>" + DPD_DDE.DeviceClasses.split("\n").join("<br/>");
+							content += "<br><br><b>Unit:</b> " + DPD_DDE.Unit;
+							content += "<br><b>Resolution:</b> " + DPD_DDE.Resolution;
+							content += "<br><b>Range:</b> " + DPD_DDE.Range;
+							content += "<br><br><b>Attachments:</b><br>";
+							DPD_DDE.Attachments.split("\n").forEach(function (attachment) {
+								if(attachment != "none") {
+									content += "<a href=" + attachment + " target='_blank'>" + attachment + "</a>";
+								} else {
+									content += "none";
+								}
+							});
+														
+							
+							$("#ElementDescription").html(content);
+						}
+					}
+					
+					if(currentDVP == undefined) {
+						
+						var selectDVP = document.getElementById("selectDVP");
+						
+						var options = selectDVP.getElementsByTagName('option');
+						while(options.length > 0) {
+							options[0].parentNode.removeChild(options[0]);
+						}
+						
+						var DVP = getByElementName('DVP');
+						for (var i=0; i< DVP.length; i++) {
+							var option = document.createElement('option');	
+							option.setAttribute('value',DVP[i]);
+							
+							var DVPAttr = getDVP(DVP[i].replace("DVP",""));
+							option.innerHTML = DVP[i] + ":[" + DVPAttr["Offset"] + ";" + DVPAttr["Scale"] + ";" + DVPAttr["NumberOfDecimals"] + ";" + DVPAttr["UnitDesignator"] + "]";
+							
+							selectDVP.appendChild(option);
+						}
+
+					
+						document.getElementById("divDVPAttach").style.display = "block";
+						document.getElementById("btnNewDVP").style.display = "inline";	
+					} else {
+						document.getElementById("btnDeleteDVP").style.display = "inline";	
+					}
+						
+				}
+				else if(currentDPT != null) {
+					// show device element property editor
+					Attributes = getDPT();
+					
+					designator = "";
+					if(Attributes["Designator"] != undefined) {
+						designator = Attributes["Designator"];
+					}
+					
+					$("#SelectedElement").html(currentDPT + " " + designator);
+					
+					// update description
+					if(Attributes["DDI"] != undefined) {
+						var DPD_DDE = DDE[Attributes["DDI"].toUpperCase().replace(/\b(0(?!\b))+/g, "")];
+						if(DPD_DDE != undefined) {
+							var content = "";
+						
+							content += DPD_DDE.Definition.split("\n").join("<br/>");
+							content += "<br><br><b>Comment:</b> " + DPD_DDE.Comment.split("\n").join("<br/>");
+							content += "<br><br><b>DeviceClasses:</b><br>" + DPD_DDE.DeviceClasses.split("\n").join("<br/>");
+							content += "<br><br><b>Unit:</b> " + DPD_DDE.Unit;
+							content += "<br><b>Resolution:</b> " + DPD_DDE.Resolution;
+							content += "<br><b>Range:</b> " + DPD_DDE.Range;
+							content += "<br><br><b>Attachments:</b><br>";
+							DPD_DDE.Attachments.split("\n").forEach(function (attachment) {
+								if(attachment != "none") {
+									content += "<a href=" + attachment + " target='_blank'>" + attachment + "</a>";
+								} else {
+									content += "none";
+								}
+							});
+														
+							
+							$("#ElementDescription").html(content);
+						}
+					}
+					
+					if(currentDVP == undefined) {
+					
+						var selectDVP = document.getElementById("selectDVP");
+						
+						var options = selectDVP.getElementsByTagName('option');
+						while(options.length > 0) {
+							options[0].parentNode.removeChild(options[0]);
+						}
+						
+						var DVP = getByElementName('DVP');
+						for (var i=0; i< DVP.length; i++) {
+							var option = document.createElement('option');	
+							option.setAttribute('value',DVP[i]);
+							
+							var DVPAttr = getDVP(DVP[i].replace("DVP",""));
+							option.innerHTML = DVP[i] + ":[" + DVPAttr["Offset"] + ";" + DVPAttr["Scale"] + ";" + DVPAttr["NumberOfDecimals"] + ";" + DVPAttr["UnitDesignator"] + "]";
+							
+							selectDVP.appendChild(option);
+						}
+						
+						document.getElementById("divDVPAttach").style.display = "block";
+						document.getElementById("btnNewDVP").style.display = "inline";	
+					} else {
+						document.getElementById("btnDeleteDVP").style.display = "inline";	
+					}		
+				}
+				else if(currentDET != null) {
+					// show device element editor
+					Attributes = getDET();
+					
+					designator = "";
+					if(Attributes["Designator"] != undefined) {
+						designator = Attributes["Designator"];
+					}
+					
+					$("#SelectedElement").html(currentDET + " " + designator);
+					
+					$("#ElementDescription").html("");
+					
+					
+					var selectDPD = document.getElementById("selectDPD");
+						
+					var options = selectDPD.getElementsByTagName('option');
+					while(options.length > 0) {
+						options[0].parentNode.removeChild(options[0]);
+					}
+					
+					var DPD = getByElementName('DPD');
+					for (var i=0; i< DPD.length; i++) {
+						var option = document.createElement('option');	
+						option.setAttribute('value',DPD[i]);
+						
+						var DPDAttr = getDPD(DPD[i].replace("DPD",""));
+						option.innerHTML = DPD[i] + ":" + DPDAttr["Designator"];
+						
+						selectDPD.appendChild(option);
+					}
+					
+					
+					var selectDPT = document.getElementById("selectDPT");
+						
+					var options = selectDPT.getElementsByTagName('option');
+					while(options.length > 0) {
+						options[0].parentNode.removeChild(options[0]);
+					}
+					
+					var DPT = getByElementName('DPT');
+					for (var i=0; i< DPT.length; i++) {
+						var option = document.createElement('option');	
+						option.setAttribute('value',DPT[i]);
+						
+						var DPTAttr = getDPT(DPT[i].replace("DPT",""));
+						option.innerHTML = DPT[i] + ":" + DPTAttr["Designator"];
+						
+						selectDPT.appendChild(option);
+					}
+					
+					
+					document.getElementById("divDPTDPDAttach").style.display = "block";
+					document.getElementById("btnNewDPT").style.display = "inline";
+					document.getElementById("btnNewDPD").style.display = "inline";				
+				}
+				else if(currentDVC != null) {
+					// show device editor
+					Attributes = getDVC();
+					
+					designator = "";
+					if(Attributes["Designator"] != undefined) {
+						designator = Attributes["Designator"];
+					}
+										
+					$("#SelectedElement").html(currentDVC + " " + designator);
+					
+					$("#ElementDescription").html("");
+				}
+				else {
+					$("#SelectedElement").html("NO DEVICE");
+					
+					$("#ElementDescription").html("");
+				}
+				
+				for(attr in Attributes) {
+					var tr = document.createElement('tr');
+					tbody.appendChild(tr);
+					
+					var td = document.createElement('td');
+					td.setAttribute('ref',"type:text, name:attribute, class:attributeClasse, id:attributeId");
+					td.innerHTML = attr;
+					tr.appendChild(td);
+					
+					td = document.createElement('td');
+					td.setAttribute('ref',"name:"+attr+", class:valueClasse, id:valueId");
+					if(Attributes[attr] != undefined) {
+						td.innerHTML = Attributes[attr].toString();
+					}
+					tr.appendChild(td);
+					
+					td = document.createElement('td');
+					td.innerHTML = "<a href='javascript:;' class='btEdit'>Edit</a>";
+					tr.appendChild(td);
+				}
+					
+
+				initPropertyEditor();
+			}
+				
+			
+			function initPropertyEditor() {
+				
+				$("#tableProperties").tableEdit({
+					columnsTr: "1",
+					enableDblClick: true, //enable edit td with dblclick
+					inputOptions : function(Attribute) {
+						if(currentDPD != null) {
+							// device element property editor
+							return getDPDOptions(Attribute);
+						}
+						else if(currentDPT != null) {
+							// device element property editor
+							return getDPTOptions(Attribute);
+						}
+						else if(currentDET != null) {
+							// device element editor
+							return getDETOptions(Attribute);
+						}
+						else if(currentDVC != null) {
+							// device editor
+							return getDVCOptions(Attribute);
+						}
+					},
+					callback: function(Attributes){
+						
+						if(currentDPD != null) {
+							// device element property editor
+							setDPD(Attributes);
+						}
+						else if(currentDPT != null) {
+							// device element property editor
+							setDPT(Attributes);
+						}
+						else if(currentDET != null) {
+							// device element editor
+							setDET(Attributes);
+						}
+						else if(currentDVC != null) {
+							// device editor
+							setDVC(Attributes);
+						}
+						
+						updateAll();
+					}
+				});
+			};
+			
+		
+			<!-- ************ -->
+			<!-- Menu buttons -->
+			<!-- ************ -->
+			
+			function btnNewMachine() {
+				window.location.href = window.location.href.substr(0,window.location.href.search(".html")+5);
+			}
+
+
+			function btnImport() {
+				$("#input").change(function() {
+					var reader = new FileReader();
+					reader.onload = function(e) {
+					
+						parser = new DOMParser();
+						xmlDoc = parser.parseFromString(e.target.result,'text/xml');
+						
+						var DVC = xmlDoc.getElementsByTagName('DVC');
+						currentDVC = DVC[0].getAttribute("A");
+						
+						for (var i = 0; i < DVC.length; i++) {
+							createDVC_Tree(DVC[i].getAttribute("A"))
+						}
+												
+						
+						// Create elements to graph and tree
+						var DET = xmlDoc.getElementsByTagName('DET');
+						for (var CreatedElements = []; CreatedElements.length < DET.length; ) {
+							for (var i = 0; i < DET.length; i++) {
+								
+								var ParentObjectID = DET[i].getAttribute("F");
+								if (ParentObjectID == 0 || CreatedElements.indexOf(ParentObjectID) > -1)
+								{
+									CreatedElements.push(DET[i].getAttribute("B"))
+									
+									createDET_SVG(DET[i].getAttribute("A"))
+									createDET_Tree(DET[i].getAttribute("A"));
+									
+									var DOR = DET[i].getElementsByTagName('DOR');
+									for (var j = 0; j < DOR.length; j++) {
+										var DPT_DPD = getByObjectID(DOR[j].getAttribute("A"));
+					
+										if(DPT_DPD.nodeName == "DPT") {
+											createDPT_Tree(DOR[j].getAttribute("A"), DET[i].getAttribute("A"));
+										} else if (DPT_DPD.nodeName == "DPD") {
+											createDPD_Tree(DOR[j].getAttribute("A"), DET[i].getAttribute("A"));
+										}
+									}				
+								}
+							}									
+						}
+						
+						updateAll();
+					};
+					
+					
+					var file = document.getElementById("input").files[0];
+					reader.readAsText(file);
+				});
+				
+				$("#input").trigger('click');
+			}
+			
+			function xmlToString(xmlData) { 
+				var xmlString;
+				//IE
+				if (window.ActiveXObject){
+					xmlString = xmlData.xml;
+				}
+				// code for Mozilla, Firefox, Opera, etc.
+				else{
+					xmlString = (new XMLSerializer()).serializeToString(xmlData);
+				}
+				return xmlString;
+			}  
+		
+			function btnExport() {
+				
+				var uri = 'data:text/xml,' + xmlToString(xmlDoc);
+
+				var link = document.createElement("a");
+				link.href = uri;
+		
+				link.style = "visibility:hidden";
+				link.download = "DVC0001.xml";
+			
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+			};
+			
+			function btnDelete() {
+				
+				if(currentDPD != null) {
+					// delete current DPD
+					delDPD();
+					updateAll();
+				}
+				else if(currentDPT != null) {
+					// delete current DPT
+					delDPT();
+					updateAll();
+				}
+				else if(currentDET != null) {
+					// delete current DET
+					delDET();
+					updateAll();
+				}
+				else if(currentDVC != null) {
+					// delete current DVC
+					
+					// reload without attributes
+					window.location.href = window.location.href.substr(0,window.location.href.search(".html")+5);
+				}
+			}
+			
+			function btnNewDeleteDVP() {
+				if(currentDPD != null) {
+					// delete DVP from current DPD
+					delDVPParent(currentDVP.replace("DVP",""),currentDPD.replace("DPD",""));
+					selectElement(currentDPD);
+				}
+				else if(currentDPT != null) {
+					// delete DVP from current DPT
+					delDVPParent(currentDVP.replace("DVP",""),currentDPT.replace("DPT",""));
+					selectElement(currentDPT);
+				}
+				
+				updateAll();
+			}
+			
+			function btnAttachDPD() {
+				var selectDPD = document.getElementById("selectDPD");
+				
+				selectElement(selectDPD.value);
+				setDPD({"Parent1": currentDET});
+				
+				updateAll();
+			}
+			
+			function btnAttachDPT() {
+				var selectDPT = document.getElementById("selectDPT");
+				
+				selectElement(selectDPT.value);
+				setDPT({"Parent1": currentDET});
+				
+				updateAll();
+			}
+			
+			function btnAttachDVP() {
+				var selectDVP = document.getElementById("selectDVP");
+				
+				selectElement(selectDVP.value);
+				if(currentDPD != null) {
+					setDVP({"Parent1":currentDPD.replace("DPD","")});
+				}
+				else if(currentDPT != null) {
+					setDVP({"Parent1":currentDPT.replace("DPT","")});
+				}
+				
+				updateAll();
+			}
+			
+			<!-- ******** -->
+			<!-- Messages -->
+			<!-- ******** -->
+			
+			function initMessages() {
+			
+				<!-- Error messages -->
+				$( "body" ).append( "<div id='DIV_MESSAGE' title='Error'><p><span class='ui-icon ui-icon-alert' style='float:left; margin:0 7px 50px 0;'></span><p id='MSGTEXT'></p></p></div>" );
+			
+				$( "#DIV_MESSAGE" ).dialog({
+						autoOpen : false,
+						modal: true, 
+						buttons: { 
+							"OK": function() { 
+								$( this ).dialog( "close" ); 
+							}
+						}
+					});
+					
+					
+				<!-- New element message -->
+				$( "body" ).append( "<div id='DIV_NEWELEMENT' title='New'><div style='clear: both'><select id='selectDDI'></select><br><p id='NewElementDescription' style='line-height: 1;'></p><br><table id='tableNewElementProperties' align='left'><thead><tr><th>Attribute</th><th>Value</th><th></th></tr></thead><tbody></tbody></table></div></div>" );
+			
+				var selectDDI = document.getElementById("selectDDI");
+				
+				var keys = Object.keys(DDE);
+				keys.sort(function (a, b) { return parseInt(a,16)-parseInt(b,16); });
+				
+				for (var i=0; i<keys.length; i++) {
+					var option = document.createElement('option');	
+					option.setAttribute('value',keys[i]);
+					option.innerHTML = keys[i] + " " + DDE[keys[i]].Description;
+					selectDDI.appendChild(option);
+				}
+			
+			
+				$( "#DIV_NEWELEMENT" ).dialog({
+						autoOpen : false,
+						modal: true,
+						resizable: false,
+						width: 360,
+						buttons: { 
+							"OK": function() { 
+								$( this ).dialog( "close" );
+
+								updateAll();
+							},
+							"CANCEL": function() { 
+								$( this ).dialog( "close" ); 
+								
+								// remove current (new) element. Note! Only one of these two is defined and will be removed
+								delDPD();
+								delDPT();
+								
+								updateAll();
+							}
+						}
+					});
+			};
+			
+			function Message(txt) {
+				$( "#DIV_MESSAGE" ).children("#MSGTEXT").html(txt);
+				$( "#DIV_MESSAGE" ).dialog("open");
+			}
+			
+			
+			function btnNewElement(elementType) {
+				if(elementType == "DVP") {
+					selectElement("DVP"+newDVP({}));
+					updateAll();
+				}
+				
+				function updateAttrTable() {
+					var Attributes;
+					
+					if(elementType == 'DPT') {
+						Attributes = getDPT();
+					} else if(elementType == 'DPD') {
+						Attributes = getDPD();
+					} else {
+						return;
+					}
+					
+					// update description
+					if(Attributes["DDI"] != undefined) {
+						var DPD_DDE = DDE[Attributes["DDI"].toUpperCase().replace(/\b(0(?!\b))+/g, "")];
+						if(DPD_DDE != undefined) {
+							var content = "";
+						
+							content += DPD_DDE.Definition;
+							content += "<br><br><b>Comment:</b> " + DPD_DDE.Comment.split("\n").join("<br/>");
+							content += "<br><br><b>DeviceClasses:</b><br>" + DPD_DDE.DeviceClasses.split("\n").join("<br/>");
+							content += "<br><br><b>Unit:</b> " + DPD_DDE.Unit;
+							content += "<br><b>Resolution:</b> " + DPD_DDE.Resolution;
+							content += "<br><b>Range:</b> " + DPD_DDE.Range;
+							content += "<br><br><b>Attachments:</b><br>";
+							DPD_DDE.Attachments.split("\n").forEach(function (attachment) {
+								if(attachment != "none") {
+									content += "<a href=" + attachment + " target='_blank'>" + attachment + "</a>";
+								} else {
+									content += "none";
+								}
+							});
+														
+							
+							$("#NewElementDescription").html(content);
+						}
+					}
+
+					// clear old table
+					var table = document.getElementById("tableNewElementProperties");
+					var tbody = table.getElementsByTagName("tbody")[0];
+					if(tbody != null) {
+						table.removeChild(tbody);
+					}
+					
+					// create new table
+					var tbody = document.createElement('tbody');	
+					table.appendChild(tbody);
+					
+					for(attr in Attributes) {
+						var tr = document.createElement('tr');
+						tbody.appendChild(tr);
+						
+						var td = document.createElement('td');
+						td.setAttribute('ref',"type:text, name:attribute, class:attributeClasse, id:attributeId");
+						td.innerHTML = attr;
+						tr.appendChild(td);
+						
+						td = document.createElement('td');
+						td.setAttribute('ref',"name:"+attr+", class:valueClasse, id:valueId");
+						if(Attributes[attr] != undefined) {
+							td.innerHTML = Attributes[attr].toString();
+						}
+						tr.appendChild(td);
+						
+						td = document.createElement('td');
+						td.innerHTML = "<a href='javascript:;' class='btEdit'>Edit</a>";
+						tr.appendChild(td);
+					}
+					
+					$("#tableNewElementProperties").tableEdit({
+						columnsTr: "1",
+						enableDblClick: true, //enable edit td with dblclick
+						inputOptions : function(Attribute) {
+							if(elementType == 'DPT') {
+								// device element property editor
+								return getDPTOptions(Attribute);
+							}
+							else if(elementType == 'DPD') {
+								// device element editor
+								return getDPDOptions(Attribute);
+							} else {
+								return ({"type":"text" });
+							}
+						},
+						callback: function(Attributes){
+							
+							if(elementType == 'DPT') {
+								setDPT(Attributes);
+							} else if(elementType == 'DPD') {
+								setDPD(Attributes);
+							} else {
+								return;
+							}
+							
+							updateAttrTable();
+						}
+					});
+				}
+				
+				if(elementType == 'DPT') {
+					selectElement("DPT"+newDPT({Parent1:currentDET}));
+				} else if(elementType == 'DPD') {
+					selectElement("DPD"+newDPD({Parent1:currentDET}));
+				} else {
+					return;
+				}
+				
+				updateAttrTable();
+				
+				var selectDDI = document.getElementById("selectDDI");
+				selectDDI.onchange = function() {
+					// change value -->
+					if(elementType == 'DPT') {
+						setDPT({"DDI":selectDDI.value, "Designator":DDE[selectDDI.value].Description});
+					} else if(elementType == 'DPD') {
+						setDPD({"DDI":selectDDI.value, "Designator":DDE[selectDDI.value].Description});
+					} else {
+						return;
+					}
+					
+					updateAttrTable();
+				};
+				
+				
+				$( "#DIV_NEWELEMENT" ).dialog("open");
+			}
+			
+		</script>
+		
+		<style type="text/css">
+			body{ font-family:"Segoe UI", Helvetica, Verdana;font-size: 11px; margin: 50px;}
+			
+			header {
+				background-color:black;
+				color:white;
+				text-align:center;
+				max-width:900px;
+				min-width:600px;
+				padding:5px;
+			}
+
+			nav {
+				background-color:grey;
+				color:black;
+				max-width:900px;
+				min-width:600px;
+				padding:5px;
+			}
+			
+			section {
+				position: relative;
+				max-width:910px;
+				min-width:600px;
+			}
+			
+			#geometryGraph {
+				border: 1px solid;
+				border-color:black;
+				height:600px;
+				width:600px; 
+				float:left;
+				padding:4px;
+			}
+			
+			#GraphNavigation {
+				position: absolute;
+				background-color:grey;
+				left: 20px; 
+				top: 550px;
+				width: 40px;
+				height: 30px;
+				
+				-ms-transform: scale(1.5); /* IE 9 */
+				-webkit-transform: scale(1.5); /* Chrome, Safari, Opera */
+				transform: scale(1.5);
+			}				
+			
+			#Device {
+				line-height:30px;
+				border: 1px solid;
+				background-color:#eeeeee;
+				border-color:black;
+				
+				text-align:left;
+				
+				height:295px;
+				width:290px; 
+				float:left;
+				padding:4px;
+				
+				overflow-y: scroll;
+			}
+			
+			#Property {
+				border: 1px solid;
+				line-height:30px;
+				background-color:#eeeeee;
+				border-color:black;
+				
+				height:295px;
+				width:290px;
+				float:left;
+				padding:4px;
+				overflow-y: scroll;
+			}
+			
+			footer {
+			    background-color:black;
+				color:white;
+				clear:both;
+				text-align:center;
+				max-width:900px;
+				min-width:600px;
+				padding:5px;
+			}
+			
+			ul.LinkedList { 
+				list-style-type: none; 
+				display: block; 
+				line-height: 1;
+				white-space: nowrap;
+				overflow-x: hidden;
+			}
+			.HandCursorStyle { 
+				margin: 0; 
+				padding: 1px; 
+				padding-left: 5px; 
+				list-style-type: none; 
+				line-height: 1px; 
+				cursor: pointer; 
+				cursor: hand; 
+			}  
+			
+			
+			ul.LinkedList, ul.LinkedList ul { 
+				list-style-type: none; 
+				background: url(Pictures/vline.png) repeat-y; 
+				margin: 0; 
+				padding: 0;
+				white-space: nowrap;
+				overflow-x: hidden;
+			} 
+			
+			ul.LinkedList ul { 
+				margin-left: 10px; 
+				white-space: nowrap;
+				overflow-x: hidden;
+			} 
+			
+			ul.LinkedList li { 
+				margin: 0; 
+				padding: 0 12px; 
+				line-height: 20px; 
+				background: url(Pictures/node.png) no-repeat; 
+				white-space: nowrap;
+				overflow-x: hidden;
+			} 
+			
+			ul.LinkedList li:last-child {
+				background: #eeeeee url(Pictures/lastnode.png) no-repeat;
+				white-space: nowrap;
+				overflow-x: hidden;
+			} 
+			
+			body table{border:0px; align:center; }
+            body table thead tr th{background:#333; color:#fff; padding:3px 10px; line-height: 1;}
+            body table tbody tr td{background:#ececec; padding:3px 10px; line-height: 1;}
+            body table tbody tr td input{border:1px solid #ccc;}
+            body table tbody tr td a{color:#069; text-decoration: none;}
+            body table tbody tr td a:hover{color:red; text-decoration: none;}
+            
+		</style>
+
+    </head>
+    <body>
+	
+		<!-- UI -->
+	
+		<header>
+			<h1>ISO 11783 machine editor<h1>
+		</header>
+		
+		<nav>
+			<button onclick="btnNewMachine()">New</button>
+			<button onclick="btnImport()">Import</button>
+			<button onclick="btnExport()">Export</button>
+		</nav>
+		
+		<section>
+			
+			<!-- div 'geometryGraph' will  be here -->
+			
+			<div id="GraphNavigation">
+				<span class="ui-icon ui-icon-arrow-1-n" style="position:absolute; left: 7px; top: 0px; border:5px" onclick="btnSVGnavN()"></span>
+				<span class="ui-icon ui-icon-arrow-1-w" style="position:absolute; left: 0px; top: 7px; border:5px" onclick="btnSVGnavW()"></span>
+				<span class="ui-icon ui-icon-arrow-1-e" style="position:absolute; left: 12px; top: 7px; border:5px" onclick="btnSVGnavE()"></span>
+				<span class="ui-icon ui-icon-arrow-1-s" style="position:absolute; left: 6px; top: 13px; border:5px" onclick="btnSVGnavS()"></span>
+				<span class="ui-icon ui-icon-plus" style="position:absolute; left: 23px; top: 1px; border:5px" onclick="btnSVGPlus()"></span>
+				<span class="ui-icon ui-icon-minus" style="position:absolute; left: 23px; top: 13px; border:5px" onclick="btnSVGMinus()"></span>
+			</div>
+			
+			<div id="Device">
+			
+				<div style="clear: both; padding:5px; background-color:grey;">
+					<span class="ui-icon ui-icon-trash" id="TRASH" ondrop="dropTree(event)" ondragover="allowDropTree(event)"></span>
+				</div>
+				
+				<div style="clear: both"> 
+					<ul id="DVCList" class="LinkedList">
+					
+					</ul>
+				</div>
+				
+				
+				
+			</div>
+			
+			<div id="Property">
+				
+				<h2 id="SelectedElement">NO DEVICE</h2>
+				
+				<p id="ElementDescription" style="line-height: 1;"></p>
+				
+				<div style="clear: both">
+					<table id="tableProperties" align="left">
+						<thead>
+							<tr>
+								<th>Attribute</th>
+								<th>Value</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+						</tbody>
+					</table>
+				</div>
+				
+				<div id="divDPTDPDAttach" style="clear: both; padding:10px;">
+					<select id='selectDPT' style='width:190px;'></select><button id="btnAttachDPT" onclick="btnAttachDPT()">Attach</button><br>
+					<select id='selectDPD' style='width:190px;'></select><button id="btnAttachDPD" onclick="btnAttachDPD()">Attach</button>
+				</div>
+				
+				<div id="divDVPAttach" style="clear: both; padding:10px;">
+					<select id='selectDVP' style='width:190px;'></select><button id="btnAttachDVP" onclick="btnAttachDVP()">Attach</button>
+				</div>
+				
+				<div style="clear: both; padding:10px;">
+					<button onclick="btnDelete()">Delete</button>
+					<button id="btnNewDPT" onclick="btnNewElement('DPT')">New DPT</button>
+					<button id="btnNewDPD" onclick="btnNewElement('DPD')">New DPD</button>
+					<button id="btnNewDVP" onclick="btnNewElement('DVP')">New DVP</button>
+					<button id="btnDeleteDVP" onclick="btnNewDeleteDVP()">Delete DVP</button>
+				</div>
+				
+			</div>
+      
+		</section>
+		
+		<footer>
+			Copyright (c) Juha Backman / LUKE
+		</footer>
+		
+		<div style="visibility:hidden">
+			<input type="file" id="input" multiple />
+		</div>
+
+		
+    </body>
+</html>
